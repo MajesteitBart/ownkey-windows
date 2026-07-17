@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
 
 const UDP_ADDR: &str = "127.0.0.1:38485";
-const TASKBAR_MARGIN_PX: i32 = 76;
+// The window includes ~44px of bottom padding for the pill's drop shadow,
+// so the visible pill still floats the same distance above the taskbar.
+const TASKBAR_MARGIN_PX: i32 = 40;
+// Keep the OS window up long enough for the webview's exit fade to play.
+const EXIT_FADE_MS: u64 = 280;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +26,12 @@ struct OverlayState {
     visible: bool,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default = "default_activity")]
+    activity: String,
+}
+
+fn default_activity() -> String {
+    "dictate".to_string()
 }
 
 impl Default for OverlayState {
@@ -34,6 +44,7 @@ impl Default for OverlayState {
             level: 0.0,
             visible: false,
             message: None,
+            activity: default_activity(),
         }
     }
 }
@@ -48,6 +59,7 @@ struct OverlayPatch {
     level: Option<f64>,
     visible: Option<bool>,
     message: Option<String>,
+    activity: Option<String>,
 }
 
 impl OverlayPatch {
@@ -59,6 +71,7 @@ impl OverlayPatch {
             || self.level.is_some()
             || self.visible.is_some()
             || self.message.is_some()
+            || self.activity.is_some()
     }
 
     fn apply(self, state: &mut OverlayState) {
@@ -87,6 +100,9 @@ impl OverlayPatch {
                 Some(value)
             };
         }
+        if let Some(value) = self.activity {
+            state.activity = value;
+        }
     }
 }
 
@@ -97,6 +113,48 @@ struct SharedOverlayState {
 
 fn emit_overlay_state(app: &AppHandle, state: &OverlayState) {
     let _ = app.emit("overlay://state", state);
+}
+
+fn sync_overlay_window(app: &AppHandle, shared: &Arc<SharedOverlayState>, state: &OverlayState) {
+    if state.visible {
+        let app_handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(window) = app_handle.get_webview_window("main") else {
+                return;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                log::info!("restoring overlay window");
+                let _ = position_overlay_window(&window);
+                let _ = window.show();
+            }
+        });
+        return;
+    }
+
+    // Delay the hide so the webview's exit fade can play; abort when the
+    // overlay was re-shown in the meantime.
+    let app_handle = app.clone();
+    let shared = shared.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(EXIT_FADE_MS));
+        let still_hidden = shared
+            .current
+            .lock()
+            .map(|state| !state.visible)
+            .unwrap_or(false);
+        if !still_hidden {
+            return;
+        }
+        let handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            let Some(window) = handle.get_webview_window("main") else {
+                return;
+            };
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.hide();
+            }
+        });
+    });
 }
 
 fn lock_state(shared: &Arc<SharedOverlayState>) -> Result<std::sync::MutexGuard<'_, OverlayState>, String> {
@@ -117,14 +175,16 @@ fn set_overlay_state(
     app: AppHandle,
     shared: State<'_, Arc<SharedOverlayState>>,
 ) -> Result<(), String> {
-    {
+    let snapshot = {
         let mut state = lock_state(shared.inner())?;
         *state = OverlayState {
             level: next.level.clamp(0.0, 1.0),
             ..next
         };
-        emit_overlay_state(&app, &state);
-    }
+        state.clone()
+    };
+    emit_overlay_state(&app, &snapshot);
+    sync_overlay_window(&app, shared.inner(), &snapshot);
     Ok(())
 }
 
@@ -152,20 +212,29 @@ fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
                         }
                     };
                     if let Ok(next) = serde_json::from_str::<OverlayState>(payload) {
-                        if let Ok(mut state) = lock_state(&shared) {
+                        if let Ok(snapshot) = lock_state(&shared).map(|mut state| {
                             *state = OverlayState {
                                 level: next.level.clamp(0.0, 1.0),
                                 ..next
                             };
-                            emit_overlay_state(&app, &state);
+                            state.clone()
+                        }) {
+                            emit_overlay_state(&app, &snapshot);
+                            sync_overlay_window(&app, &shared, &snapshot);
                         }
                         continue;
                     }
                     if let Ok(patch) = serde_json::from_str::<OverlayPatch>(payload) {
                         if patch.has_updates() {
-                            if let Ok(mut state) = lock_state(&shared) {
+                            let should_sync_window = patch.visible.is_some();
+                            if let Ok(snapshot) = lock_state(&shared).map(|mut state| {
                                 patch.apply(&mut state);
-                                emit_overlay_state(&app, &state);
+                                state.clone()
+                            }) {
+                                emit_overlay_state(&app, &snapshot);
+                                if should_sync_window {
+                                    sync_overlay_window(&app, &shared, &snapshot);
+                                }
                             }
                             continue;
                         }
@@ -223,12 +292,16 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_ignore_cursor_events(true);
+                let _ = window.set_focusable(false);
                 let _ = position_overlay_window(&window);
             }
 
             if let Ok(initial) = lock_state(&state_for_setup) {
                 let handle = app.handle().clone();
                 emit_overlay_state(&handle, &initial);
+                let snapshot = initial.clone();
+                drop(initial);
+                sync_overlay_window(&handle, &state_for_setup, &snapshot);
             }
 
             start_udp_bridge(app.handle().clone(), state_for_setup.clone());

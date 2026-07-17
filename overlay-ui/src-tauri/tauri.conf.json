@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "VoiceKey Overlay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.voicekey.overlay",
   "build": {
     "frontendDist": "../dist",
@@ -14,12 +14,12 @@
       {
         "label": "main",
         "title": "VoiceKey Overlay",
-        "width": 194,
-        "height": 126,
-        "minWidth": 194,
-        "minHeight": 126,
-        "maxWidth": 194,
-        "maxHeight": 126,
+        "width": 293,
+        "height": 117,
+        "minWidth": 293,
+        "minHeight": 117,
+        "maxWidth": 293,
+        "maxHeight": 117,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
@@ -45,3 +45,4 @@
     ]
   }
 }
+

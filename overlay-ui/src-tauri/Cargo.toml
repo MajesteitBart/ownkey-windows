@@ -1,6 +1,6 @@
 [package]
 name = "voicekey-overlay"
-version = "0.2.0"
+version = "0.3.0"
 description = "VoiceKey overlay desktop shell"
 authors = ["VoiceKey"]
 license = "MIT"
@@ -23,3 +23,4 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.0", features = [] }
 tauri-plugin-log = "2"
+

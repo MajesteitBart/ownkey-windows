@@ -2,6 +2,7 @@ export type ConnectionState = "checking" | "online" | "offline";
 export type ListeningState = "ready" | "arming" | "listening" | "error";
 export type ProcessingState = "idle" | "processing" | "done" | "error";
 export type TargetState = "unknown" | "selected" | "not_selected";
+export type ActivityState = "dictate" | "rewrite";
 
 export interface OverlayState {
   connection: ConnectionState;
@@ -11,6 +12,7 @@ export interface OverlayState {
   level: number;
   visible: boolean;
   message?: string | null;
+  activity?: ActivityState;
 }
 
 export const defaultOverlayState: OverlayState = {
@@ -21,4 +23,5 @@ export const defaultOverlayState: OverlayState = {
   level: 0,
   visible: false,
   message: null,
+  activity: "dictate",
 };

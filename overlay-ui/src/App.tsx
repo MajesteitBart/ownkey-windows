@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { DevToolbar } from "@/components/overlay/dev-toolbar";
+import { DevToolbar, type DevBackground } from "@/components/overlay/dev-toolbar";
 import { VoiceOverlay } from "@/components/overlay/voice-overlay";
 import { defaultOverlayState, type OverlayState } from "@/types/overlay";
 
@@ -21,8 +21,17 @@ function isOverlayState(value: unknown): value is OverlayState {
   );
 }
 
+// Design-mode backdrops to verify overlay readability on any desktop.
+const DEV_BACKGROUNDS: Record<DevBackground, string> = {
+  light: "bg-[radial-gradient(circle_at_top,#ffffff,#eef1f5_55%,#dde3ea)]",
+  dark: "bg-[radial-gradient(circle_at_top,#1a1d26,#0b0d12_60%,#06070a)]",
+  image:
+    "bg-[linear-gradient(135deg,#f6d365_0%,#fda085_30%,#c471ed_65%,#4a90d9_100%)]",
+};
+
 export default function App() {
   const [state, setState] = useState<OverlayState>(defaultOverlayState);
+  const [background, setBackground] = useState<DevBackground>("light");
   const showDevToolbar = DEV_MODE && !IS_TAURI_RUNTIME;
 
   useEffect(() => {
@@ -80,15 +89,15 @@ export default function App() {
 
   const rootClassName = useMemo(() => {
     if (showDevToolbar) {
-      return "relative flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,#f3f4f6,#e5e7eb_55%,#d1d5db)]";
+      return `relative flex h-full w-full items-center justify-center ${DEV_BACKGROUNDS[background]}`;
     }
     return "relative flex h-full w-full items-center justify-center bg-transparent";
-  }, [showDevToolbar]);
+  }, [showDevToolbar, background]);
 
   return (
     <main className={rootClassName}>
       <VoiceOverlay state={state} />
-      {showDevToolbar ? <DevToolbar onSetState={applyState} /> : null}
+      {showDevToolbar ? <DevToolbar onSetState={applyState} onSetBackground={setBackground} /> : null}
     </main>
   );
 }

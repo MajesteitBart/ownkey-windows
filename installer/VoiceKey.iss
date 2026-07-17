@@ -1,5 +1,5 @@
 #define MyAppName "VoiceKey"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "VoiceKey"
 #define MyAppExeName "backend\\VoiceKey.exe"
 
@@ -38,3 +38,4 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+

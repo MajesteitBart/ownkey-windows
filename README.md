@@ -61,8 +61,16 @@ Sign up at [console.mistral.ai](https://console.mistral.ai) — Voxtral is avail
 |--------|-----|
 | Start recording | Hold **Right Alt**, wait for the short ping, then speak |
 | Stop & transcribe | Release the hotkey |
+| Rewrite selected text | Highlight text, hold the rewrite hotkey (**Right Ctrl** by default), speak an instruction ("make this more formal", "translate to English", "turn into bullet points"), release |
 | Open Settings | Right-click tray icon → **Settings** |
 | Quit | Right-click tray icon → **Quit** |
+
+### AI rewrite
+
+Two Wispr Flow-style features, both powered by your Mistral API key:
+
+- **Auto-rewrite dictation** — when enabled in Settings, every transcript is cleaned up before it is typed: filler words removed, self-corrections applied, punctuation fixed, tone and formatting applied per your settings. If the rewrite call fails, the raw transcript is inserted instead.
+- **Rewrite selected text** — highlight text anywhere, hold the rewrite hotkey, and speak what should happen to it. The selection is replaced in place with the rewritten version.
 
 ### Tray icon states
 
@@ -101,6 +109,13 @@ Settings are stored in `%APPDATA%\VoiceKey\config.json` and managed through the 
 | `language` | `auto` | Transcription language (`auto`, `en`, `nl`, `de`, `fr`, …) |
 | `paste_mode` | `true` | Clipboard paste (faster) vs. keystroke-by-keystroke |
 | `sample_rate` | `16000` | Microphone sample rate (Hz) |
+| `auto_rewrite` | `false` | Clean up every dictation with AI before typing it |
+| `rewrite_tone` | `auto` | Tone for auto-rewrite: `auto`, `professional`, `casual`, `friendly`, `concise` |
+| `rewrite_formatting` | `true` | Let auto-rewrite structure paragraphs and bullet lists |
+| `rewrite_custom_instructions` | *(empty)* | Extra free-form instructions applied to auto-rewrite |
+| `rewrite_hotkey` | `right ctrl` | Hold-to-talk key for rewriting the selected text (`off` to disable) |
+| `rewrite_model` | `mistral-small-latest` | Chat model used for rewrites |
+| `chat_endpoint` | `https://api.mistral.ai/v1/chat/completions` | Chat-completions endpoint used for rewrites |
 
 API key source: `config.json` (`api_key`) set from the Settings window.
 
