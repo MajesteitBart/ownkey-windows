@@ -13,7 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/outfit": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@tauri-apps/api": "^2.10.1",
     "class-variance-authority": "^0.7.1",

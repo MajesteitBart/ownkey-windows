@@ -83,8 +83,8 @@ radius 6, padding 2 8`. Show only in a future "armed/ready" hint state.
 ## 4. Window (tauri.conf.json)
 
 The pill is far smaller than the current 293×117 card. Change the window to
-**320 × 96**, pill centered horizontally and anchored to the bottom, with
-~24px transparent margin on all sides so the glow shadow never clips. Longest
+**320 × 132**, pill centered, so the black drop shadow (which reaches ~43px
+below the pill) and the orange glow never clip at the window edge. Longest
 label ("SELECT A TEXT BOX") must fit within 320 — verify, and let the pill hug
 its content rather than stretching. Keep: transparent, no decorations,
 always-on-top, skip taskbar, non-focusable, fixed size.

@@ -47,6 +47,57 @@
   }
 }
 
+/* Brand pill waveform (docs/OVERLAY_DESIGN_SPEC.md): bars move by scaleY only. */
+@keyframes ok-bar-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes ok-bar-ripple {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(0.85);
+  }
+}
+
+@keyframes ok-bar-breathe {
+  0%,
+  100% {
+    transform: scaleY(0.22);
+  }
+  50% {
+    transform: scaleY(0.42);
+  }
+}
+
+.ok-bar-bounce {
+  animation: ok-bar-bounce 1.1s ease-in-out infinite;
+}
+
+.ok-bar-ripple {
+  animation: ok-bar-ripple 0.8s ease-in-out infinite;
+}
+
+.ok-bar-breathe {
+  animation: ok-bar-breathe 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ok-bar-bounce,
+  .ok-bar-ripple,
+  .ok-bar-breathe {
+    animation: none;
+  }
+}
+
 @keyframes ownkey-overlay-in {
   from {
     opacity: 0;
