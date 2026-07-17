@@ -6,7 +6,6 @@ build/
 build_*/
 **/dist/
 **/build/
-*.spec
 
 # Local config (contains your API key — never commit this)
 config.json

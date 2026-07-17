@@ -137,12 +137,22 @@ PYNPUT_KEY_MAP = {
     "scroll lock":  ("scroll_lock",),
 }
 
-# Icon colours per state
+# Icon waveform colours per state (brand: ash / signal orange / amber)
 ICON_COLORS = {
-    "idle":       (80, 80, 80, 255),
-    "recording":  (220, 40, 40, 255),
-    "processing": (220, 140, 0, 255),
+    "idle":       (142, 138, 127, 255),
+    "recording":  (222, 95, 20, 255),
+    "processing": (244, 162, 60, 255),
 }
+
+# Brand palette (assets/ownkey-delano-brand-reference-2026-05-31-1.html)
+BRAND_KEY = "#0E0E0E"
+BRAND_GRAPHITE = "#171717"
+BRAND_SLATE = "#202020"
+BRAND_LINE = "#2C2C2C"
+BRAND_BONE = "#F3F1EC"
+BRAND_ASH = "#8E8A7F"
+BRAND_ORANGE = "#DE5F14"
+BRAND_AMBER = "#F4A23C"
 
 # Absolute floor to ignore empty/micro-tap captures (WAV bytes incl. header).
 MIN_AUDIO_BYTES = 800
@@ -1052,37 +1062,35 @@ def is_startup_enabled() -> bool:
 # Icon generation
 # ---------------------------------------------------------------------------
 
+def resource_path(*parts: str) -> str:
+    """Resolve a bundled asset path for both source and PyInstaller runs."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, *parts)
+
+
 def make_icon(state: str = "idle") -> Image.Image:
-    """Generate a 64×64 RGBA PIL image: coloured circle with 'V'."""
+    """Return the brand tray icon: bone monkey mark with state-coloured bars."""
+    asset = resource_path("assets", "tray", f"tray-{state}.png")
+    if os.path.isfile(asset):
+        try:
+            return Image.open(asset).convert("RGBA")
+        except Exception:
+            pass
+
+    # Fallback: draw the waveform motif directly (bone tile, state bars).
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([4, 4, size - 4, size - 4], radius=16, fill=(243, 241, 236, 255))
     color = ICON_COLORS.get(state, ICON_COLORS["idle"])
-    # Draw filled circle
-    margin = 4
-    draw.ellipse([margin, margin, size - margin, size - margin], fill=color)
-    # Draw "V" letter in white
-    font = None
-    try:
-        # Try to load a reasonable font; fall back to default
-        font = ImageFont.truetype("arial.ttf", 36)
-    except Exception:
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            font = None
-    text = "V"
-    if font:
-        try:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-        except AttributeError:
-            # Older Pillow
-            tw, th = draw.textsize(text, font=font)  # type: ignore[attr-defined]
-        tx = (size - tw) // 2
-        ty = (size - th) // 2 - 2
-        draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font)
+    bar_heights = [14, 26, 36, 23, 15]
+    bar_w, gap = 6, 4
+    total_w = len(bar_heights) * bar_w + (len(bar_heights) - 1) * gap
+    x = (size - total_w) // 2
+    for h in bar_heights:
+        y = (size - h) // 2
+        draw.rounded_rectangle([x, y, x + bar_w, y + h], radius=3, fill=color)
+        x += bar_w + gap
     return img
 
 
@@ -1266,13 +1274,15 @@ def type_text(text: str, paste_mode: bool) -> None:
 # ---------------------------------------------------------------------------
 
 class SettingsWindow:
-    """Dark-themed tkinter settings dialog."""
+    """Brand-styled tkinter settings dialog (Ownkey brand book)."""
 
-    BG = "#1e1e1e"
-    FG = "#d4d4d4"
-    ENTRY_BG = "#2d2d2d"
-    ACCENT = "#0e639c"
-    BTN_BG = "#3a3a3a"
+    BG = BRAND_KEY
+    FG = BRAND_BONE
+    MUTED = BRAND_ASH
+    ENTRY_BG = BRAND_SLATE
+    LINE = BRAND_LINE
+    ACCENT = BRAND_ORANGE
+    BTN_BG = BRAND_SLATE
 
     def __init__(self, app: "OwnkeyApp"):
         self.app = app
@@ -1291,68 +1301,123 @@ class SettingsWindow:
 
         win = tk.Tk()
         self._win = win
-        win.title(f"{APP_NAME} Settings")
+        win.title(f"{APP_NAME} — Settings")
         win.resizable(False, False)
         win.configure(bg=self.BG)
         win.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        pad = {"padx": 12, "pady": 6}
+        # Window/taskbar icon: the brand monkey mark.
+        try:
+            from PIL import ImageTk
+
+            self._icon_photo = ImageTk.PhotoImage(make_icon("idle"))
+            win.iconphoto(True, self._icon_photo)
+        except Exception:
+            pass
+
+        # Mono font for spec-style labels, per the brand's type system.
+        try:
+            import tkinter.font as tkfont
+
+            families = set(tkfont.families(win))
+        except Exception:
+            families = set()
+        mono = next(
+            (f for f in ("JetBrains Mono", "Cascadia Mono", "Consolas") if f in families),
+            "Courier New",
+        )
+
+        pad = {"padx": 14, "pady": 5}
 
         def label(text, row):
-            tk.Label(win, text=text, bg=self.BG, fg=self.FG, anchor="w").grid(
-                row=row, column=0, sticky="w", **pad
-            )
+            tk.Label(win, text=text, bg=self.BG, fg=self.MUTED, anchor="w",
+                     font=("Segoe UI", 10)).grid(row=row, column=0, sticky="w", **pad)
 
         def entry(row, show=None):
-            e = tk.Entry(win, bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG,
-                         relief="flat", width=42, show=show or "")
-            e.grid(row=row, column=1, sticky="ew", **pad)
+            e = tk.Entry(win, bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.ACCENT,
+                         relief="flat", width=42, show=show or "",
+                         highlightthickness=1, highlightbackground=self.LINE,
+                         highlightcolor=self.ACCENT, font=("Segoe UI", 10))
+            e.grid(row=row, column=1, sticky="ew", ipady=3, **pad)
             return e
 
         def combo(values, row):
             var = tk.StringVar(win)
             c = ttk.Combobox(win, textvariable=var, values=values, state="readonly",
-                             width=40)
+                             width=40, font=("Segoe UI", 10))
             c.grid(row=row, column=1, sticky="ew", **pad)
             return var, c
 
-        # Style combobox to match dark theme (best-effort)
+        def section(text, row, top_pad=18):
+            holder = tk.Frame(win, bg=self.BG)
+            holder.grid(row=row, column=0, columnspan=2, sticky="w",
+                        padx=14, pady=(top_pad, 4))
+            tk.Frame(holder, width=7, height=7, bg=self.ACCENT).pack(side="left")
+            tk.Label(holder, text="  " + " ".join(text.upper()), bg=self.BG,
+                     fg=self.MUTED, font=(mono, 8)).pack(side="left")
+
+        # Style combobox to match the brand theme (best-effort under clam)
         style = ttk.Style(win)
         style.theme_use("clam")
         style.configure("TCombobox",
                         fieldbackground=self.ENTRY_BG,
-                        background=self.BTN_BG,
+                        background=self.ENTRY_BG,
+                        bordercolor=self.LINE,
+                        arrowcolor=self.MUTED,
+                        lightcolor=self.ENTRY_BG,
+                        darkcolor=self.ENTRY_BG,
                         foreground=self.FG,
                         selectbackground=self.ACCENT,
-                        selectforeground=self.FG)
+                        selectforeground=BRAND_KEY)
         style.map("TCombobox",
                   fieldbackground=[("readonly", self.ENTRY_BG)],
                   foreground=[("readonly", self.FG)],
-                  selectbackground=[("readonly", self.ACCENT)],
+                  selectbackground=[("readonly", self.ENTRY_BG)],
                   selectforeground=[("readonly", self.FG)])
+        win.option_add("*TCombobox*Listbox.background", self.ENTRY_BG)
+        win.option_add("*TCombobox*Listbox.foreground", self.FG)
+        win.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
+        win.option_add("*TCombobox*Listbox.selectForeground", BRAND_KEY)
 
         row = 0
 
+        # Header: wordmark + mono subtitle
+        header = tk.Frame(win, bg=self.BG)
+        header.grid(row=row, column=0, columnspan=2, sticky="w", padx=14, pady=(16, 2))
+        tk.Label(header, text="own", bg=self.BG, fg=self.FG,
+                 font=("Segoe UI", 17, "bold")).pack(side="left")
+        tk.Label(header, text="key", bg=self.BG, fg=self.ACCENT,
+                 font=("Segoe UI", 17, "bold")).pack(side="left")
+        tk.Label(header, text="   S E T T I N G S", bg=self.BG, fg=self.MUTED,
+                 font=(mono, 9)).pack(side="left", pady=(6, 0))
+        row += 1
+
+        section("Connection", row, top_pad=10)
+        row += 1
+
         # API Key
-        label("API Key:", row)
+        label("API key", row)
         e_apikey = entry(row, show="•")
         e_apikey.insert(0, cfg.get("api_key", ""))
         row += 1
 
         # Endpoint
-        label("Endpoint:", row)
+        label("Endpoint", row)
         e_endpoint = entry(row)
         e_endpoint.insert(0, cfg.get("endpoint", DEFAULT_CONFIG["endpoint"]))
         row += 1
 
         # Model
-        label("Model:", row)
+        label("Model", row)
         e_model = entry(row)
         e_model.insert(0, cfg.get("model", DEFAULT_CONFIG["model"]))
         row += 1
 
+        section("Dictation", row)
+        row += 1
+
         # Hotkey
-        label("Hotkey:", row)
+        label("Hotkey", row)
         v_hotkey, c_hotkey = combo(HOTKEY_LIST, row)
         hotkey_value = sanitize_hotkey(cfg.get("hotkey", DEFAULT_CONFIG["hotkey"]))
         v_hotkey.set(hotkey_value)
@@ -1360,7 +1425,7 @@ class SettingsWindow:
         row += 1
 
         # Language
-        label("Language:", row)
+        label("Language", row)
         v_lang, c_lang = combo(LANGUAGE_LIST, row)
         language_value = sanitize_language(cfg.get("language", DEFAULT_CONFIG["language"]))
         v_lang.set(language_value)
@@ -1403,10 +1468,7 @@ class SettingsWindow:
         row += 1
 
         # --- AI rewrite section ---
-        tk.Label(win, text="AI Rewrite", bg=self.BG, fg=self.FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").grid(
-            row=row, column=0, columnspan=2, sticky="w", padx=12, pady=(14, 2)
-        )
+        section("AI Rewrite", row)
         row += 1
 
         v_auto_rewrite = tk.BooleanVar(
@@ -1424,7 +1486,7 @@ class SettingsWindow:
         row += 1
 
         # Tone
-        label("Tone:", row)
+        label("Tone", row)
         v_tone, c_tone = combo(REWRITE_TONE_LIST, row)
         tone_value = sanitize_rewrite_tone(cfg.get("rewrite_tone", DEFAULT_CONFIG["rewrite_tone"]))
         v_tone.set(tone_value)
@@ -1447,13 +1509,13 @@ class SettingsWindow:
         row += 1
 
         # Custom instructions
-        label("Custom instructions:", row)
+        label("Custom instructions", row)
         e_custom = entry(row)
         e_custom.insert(0, cfg.get("rewrite_custom_instructions", ""))
         row += 1
 
         # Rewrite hotkey (hold, speak an instruction to rewrite the selected text)
-        label("Rewrite hotkey:", row)
+        label("Rewrite hotkey", row)
         v_rewrite_hotkey, c_rewrite_hotkey = combo(REWRITE_HOTKEY_LIST, row)
         rewrite_hotkey_value = sanitize_rewrite_hotkey(
             cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value
@@ -1463,7 +1525,7 @@ class SettingsWindow:
         row += 1
 
         # Rewrite model
-        label("Rewrite model:", row)
+        label("Rewrite model", row)
         e_rewrite_model = entry(row)
         e_rewrite_model.insert(0, cfg.get("rewrite_model", DEFAULT_CONFIG["rewrite_model"]))
         row += 1
@@ -1505,12 +1567,16 @@ class SettingsWindow:
             self._on_close()
 
         tk.Button(btn_frame, text="Save", command=save,
-                  bg=self.ACCENT, fg="white", relief="flat",
-                  padx=18, pady=4).pack(side="left", padx=6)
+                  bg=self.FG, fg=BRAND_KEY, activebackground="#FFFFFF",
+                  activeforeground=BRAND_KEY, relief="flat",
+                  font=("Segoe UI", 10, "bold"), cursor="hand2",
+                  padx=24, pady=5).pack(side="left", padx=6)
 
         tk.Button(btn_frame, text="Cancel", command=self._on_close,
-                  bg=self.BTN_BG, fg=self.FG, relief="flat",
-                  padx=18, pady=4).pack(side="left", padx=6)
+                  bg=self.BTN_BG, fg=self.FG, activebackground=self.LINE,
+                  activeforeground=self.FG, relief="flat",
+                  font=("Segoe UI", 10), cursor="hand2",
+                  padx=24, pady=5).pack(side="left", padx=6)
 
         win.columnconfigure(1, weight=1)
         win.eval("tk::PlaceWindow . center")
