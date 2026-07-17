@@ -1,4 +1,5 @@
 # PyInstaller build output
+dist-installer/
 dist/
 dist_*/
 build/

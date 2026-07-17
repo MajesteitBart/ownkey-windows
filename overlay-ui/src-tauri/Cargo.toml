@@ -1,8 +1,8 @@
 [package]
-name = "voicekey-overlay"
+name = "ownkey-overlay"
 version = "0.3.0"
-description = "VoiceKey overlay desktop shell"
-authors = ["VoiceKey"]
+description = "Ownkey overlay desktop shell"
+authors = ["Ownkey"]
 license = "MIT"
 repository = ""
 edition = "2021"

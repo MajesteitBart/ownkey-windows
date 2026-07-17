@@ -1,4 +1,4 @@
-# VoiceKey Overlay UI (Tauri + React + shadcn-style)
+# Ownkey Overlay UI (Tauri + React + shadcn-style)
 
 This folder contains a standalone desktop overlay built with:
 
@@ -84,10 +84,10 @@ Send JSON payloads from Python either as full state or patch.
 
 ## Python Runtime Toggle
 
-In your existing `voicekey.py` runtime, you can disable the Tkinter overlay and drive only Tauri:
+In your existing `ownkey.py` runtime, you can disable the Tkinter overlay and drive only Tauri:
 
 ```powershell
-$env:VOICEKEY_TAURI_OVERLAY_ONLY="1"
+$env:OWNKEY_TAURI_OVERLAY_ONLY="1"
 ```
 
 The Python app will still emit UDP patches to `127.0.0.1:38485`.

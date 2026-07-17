@@ -1,8 +1,16 @@
-# VoiceKey 🎙️
+# Ownkey for Windows 🎙️
 
 **Push-to-talk voice keyboard for Windows, powered by [Voxtral](https://mistral.ai/news/voxtral/).**
 
 Hold a hotkey → speak → release → your words are typed anywhere on screen.
+
+Ownkey is a keyboard you actually own: modern AI input without sending your words to someone else's servers. You bring your own API key; your keystrokes stay yours.
+
+Part of the Ownkey family:
+
+- **Ownkey for Windows** — this repository
+- **[Ownkey Keyboard (Android)](https://github.com/MajesteitBart/ownkey-keyboard)**
+- Website: [ownkey.bvdm.ai](https://ownkey.bvdm.ai) *(planned)*
 
 ---
 
@@ -17,14 +25,14 @@ Hold a hotkey → speak → release → your words are typed anywhere on screen.
 
 ## End-user install status
 
-VoiceKey is **not yet shipped as a one-click installer** (`.msi`/setup) or a true **single self-contained executable**.
+Ownkey is **not yet shipped as a one-click installer** (`.msi`/setup) or a true **single self-contained executable**.
 
 Current packaging is a **portable folder build** created with PyInstaller `--onedir`:
 
-- `dist\VoiceKey\VoiceKey.exe`
+- `dist\Ownkey\Ownkey.exe`
 - plus required runtime files in the same folder
 
-That means users must keep the full `dist\VoiceKey` folder together.
+That means users must keep the full `dist\Ownkey` folder together.
 
 For complete user-facing installation steps, see **[`docs/USER_INSTALLATION.md`](docs/USER_INSTALLATION.md)**.
 
@@ -44,7 +52,7 @@ Paste your API key and click **Save**.
 **3. Run**
 
 ```bash
-python voicekey.py
+python ownkey.py
 ```
 
 The app starts in the system tray (bottom-right). Right-click → **Settings** to configure your API key.
@@ -80,25 +88,9 @@ Two Wispr Flow-style features, both powered by your Mistral API key:
 | 🔴 Red | Recording |
 | 🟠 Orange | Transcribing |
 
-## App screenshots (latest update)
-
-### Screenshot 1 (Listening - idle)
-
-![VoiceKey screenshot 1](docs/screenshots/screenshot-1.jpg)
-
-### Screenshot 2 (Processing)
-
-![VoiceKey screenshot 2](docs/screenshots/screenshot-2.jpg)
-
-### Screenshot 3 (Listening - active)
-
-![VoiceKey screenshot 3](docs/screenshots/screenshot-3.jpg)
-
----
-
 ## Configuration
 
-Settings are stored in `%APPDATA%\VoiceKey\config.json` and managed through the Settings window.
+Settings are stored in `%APPDATA%\Ownkey\config.json` and managed through the Settings window.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -127,9 +119,9 @@ API key source: `config.json` (`api_key`) set from the Settings window.
 build.bat
 ```
 
-Output: `dist\VoiceKey\VoiceKey.exe`.
+Output: `dist\Ownkey\Ownkey.exe`.
 
-Important: this is a **folder-based bundle**, not a single self-contained executable. Share the full `dist\VoiceKey` directory with users.
+Important: this is a **folder-based bundle**, not a single self-contained executable. Share the full `dist\Ownkey` directory with users.
 
 Requires PyInstaller (`pip install pyinstaller`). The build script installs it automatically.
 
@@ -175,7 +167,7 @@ pnpm dev
 It listens for overlay state payloads on UDP `127.0.0.1:38485`.
 See `overlay-ui/README.md` for payload format and bridge details.
 
-Set `VOICEKEY_TAURI_OVERLAY_ONLY=1` to disable Tkinter overlay and use the Tauri overlay only.
+Set `OWNKEY_TAURI_OVERLAY_ONLY=1` to disable Tkinter overlay and use the Tauri overlay only.
 
 ---
 

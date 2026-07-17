@@ -81,7 +81,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
 
   return (
     <div
-      className="pointer-events-none relative select-none transition-[opacity,transform] duration-200 ease-out [animation:voicekey-overlay-in_0.22s_ease-out]"
+      className="pointer-events-none relative select-none transition-[opacity,transform] duration-200 ease-out [animation:ownkey-overlay-in_0.22s_ease-out]"
       style={{
         width: 293,
         height: 117,
@@ -104,7 +104,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
         >
           <div
             key={presentation.key}
-            className={`absolute inset-0 ${outgoingPresentation ? "voicekey-state-in" : ""}`}
+            className={`absolute inset-0 ${outgoingPresentation ? "ownkey-state-in" : ""}`}
             style={{
               background: `radial-gradient(120% 90% at 50% 5%, ${presentation.palette.main}1c 0%, transparent 62%)`,
             }}
@@ -112,7 +112,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
           {outgoingPresentation ? (
             <div
               aria-hidden="true"
-              className="voicekey-state-out absolute inset-0"
+              className="ownkey-state-out absolute inset-0"
               style={{
                 background: `radial-gradient(120% 90% at 50% 5%, ${outgoingPresentation.palette.main}1c 0%, transparent 62%)`,
               }}
@@ -139,7 +139,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
           <span
             key={presentation.key}
             role="status"
-            className={`absolute bottom-[10px] left-[18px] whitespace-nowrap text-[12px] font-normal tracking-[0.01em] ${outgoingPresentation ? "voicekey-state-in" : ""}`}
+            className={`absolute bottom-[10px] left-[18px] whitespace-nowrap text-[12px] font-normal tracking-[0.01em] ${outgoingPresentation ? "ownkey-state-in" : ""}`}
             style={{
               color: presentation.labelColor,
               fontFamily:
@@ -152,7 +152,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
           {outgoingPresentation ? (
             <span
               aria-hidden="true"
-              className="voicekey-state-out absolute bottom-[10px] left-[18px] whitespace-nowrap text-[12px] font-normal tracking-[0.01em]"
+              className="ownkey-state-out absolute bottom-[10px] left-[18px] whitespace-nowrap text-[12px] font-normal tracking-[0.01em]"
               style={{
                 color: outgoingPresentation.labelColor,
                 fontFamily:
@@ -167,7 +167,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
 
         <div
           key={presentation.key}
-          className={`absolute inset-0 rounded-[15px] ${outgoingPresentation ? "voicekey-state-in" : ""}`}
+          className={`absolute inset-0 rounded-[15px] ${outgoingPresentation ? "ownkey-state-in" : ""}`}
           style={{
             padding: "1px",
             background: `linear-gradient(112deg, ${presentation.palette.soft}dd 0%, ${presentation.palette.main}a8 22%, ${presentation.palette.dim}88 62%, ${presentation.palette.main}e8 100%)`,
@@ -179,7 +179,7 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
         {outgoingPresentation ? (
           <div
             aria-hidden="true"
-            className="voicekey-state-out absolute inset-0 rounded-[15px]"
+            className="ownkey-state-out absolute inset-0 rounded-[15px]"
             style={{
               padding: "1px",
               background: `linear-gradient(112deg, ${outgoingPresentation.palette.soft}dd 0%, ${outgoingPresentation.palette.main}a8 22%, ${outgoingPresentation.palette.dim}88 62%, ${outgoingPresentation.palette.main}e8 100%)`,

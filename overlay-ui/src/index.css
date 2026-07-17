@@ -47,7 +47,7 @@
   }
 }
 
-@keyframes voicekey-overlay-in {
+@keyframes ownkey-overlay-in {
   from {
     opacity: 0;
     transform: scale(0.92) translateY(6px);
@@ -58,7 +58,7 @@
   }
 }
 
-@keyframes voicekey-state-in {
+@keyframes ownkey-state-in {
   from {
     opacity: 0;
     transform: translateY(1px);
@@ -69,7 +69,7 @@
   }
 }
 
-@keyframes voicekey-state-out {
+@keyframes ownkey-state-out {
   from {
     opacity: 1;
     transform: translateY(0);
@@ -80,16 +80,16 @@
   }
 }
 
-.voicekey-state-in {
-  animation: voicekey-state-in 140ms cubic-bezier(0, 0, 0.2, 1) both;
+.ownkey-state-in {
+  animation: ownkey-state-in 140ms cubic-bezier(0, 0, 0.2, 1) both;
 }
 
-.voicekey-state-out {
-  animation: voicekey-state-out 90ms cubic-bezier(0, 0, 0.2, 1) both;
+.ownkey-state-out {
+  animation: ownkey-state-out 90ms cubic-bezier(0, 0, 0.2, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  @keyframes voicekey-state-in-reduced {
+  @keyframes ownkey-state-in-reduced {
     from {
       opacity: 0;
     }
@@ -98,7 +98,7 @@
     }
   }
 
-  @keyframes voicekey-state-out-reduced {
+  @keyframes ownkey-state-out-reduced {
     from {
       opacity: 1;
     }
@@ -107,11 +107,11 @@
     }
   }
 
-  .voicekey-state-in {
-    animation: voicekey-state-in-reduced 80ms cubic-bezier(0, 0, 0.2, 1) both;
+  .ownkey-state-in {
+    animation: ownkey-state-in-reduced 80ms cubic-bezier(0, 0, 0.2, 1) both;
   }
 
-  .voicekey-state-out {
-    animation: voicekey-state-out-reduced 80ms cubic-bezier(0, 0, 0.2, 1) both;
+  .ownkey-state-out {
+    animation: ownkey-state-out-reduced 80ms cubic-bezier(0, 0, 0.2, 1) both;
   }
 }

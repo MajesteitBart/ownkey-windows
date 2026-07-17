@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "VoiceKey Overlay",
+  "productName": "Ownkey Overlay",
   "version": "0.3.0",
-  "identifier": "com.voicekey.overlay",
+  "identifier": "com.ownkey.overlay",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "VoiceKey Overlay",
+        "title": "Ownkey Overlay",
         "width": 293,
         "height": 117,
         "minWidth": 293,
