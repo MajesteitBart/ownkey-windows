@@ -50,4 +50,5 @@ This file captures the compacted session summary and the agreed implementation o
 
 ## Immediate Next Step
 
-- Implement the new neon waveform in the overlay and remove the old gray bar card.
+- Restyle the overlay to the brand pill from the Ownkey website. The neon
+  waveform direction above is superseded — follow `docs/OVERLAY_DESIGN_SPEC.md`.
