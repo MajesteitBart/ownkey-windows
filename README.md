@@ -1,6 +1,6 @@
 # Ownkey for Windows 🎙️
 
-**Push-to-talk voice keyboard for Windows, powered by [Voxtral](https://mistral.ai/news/voxtral/).**
+**Push-to-talk voice keyboard for Windows with bring-your-own-key AI providers.**
 
 Hold a hotkey → speak → release → your words are typed anywhere on screen.
 
@@ -44,10 +44,11 @@ For complete user-facing installation steps, see **[`docs/USER_INSTALLATION.md`]
 pip install -r requirements.txt
 ```
 
-**2. Set your API key in Settings**
+**2. Configure providers in Settings**
 
 Start the app, then right-click the tray icon and open **Settings**.
-Paste your API key and click **Save**.
+Choose separate providers for **Audio** and **Rewriting**, enter their API keys,
+click **Refresh** to retrieve available models, then click **Save**.
 
 **3. Run**
 
@@ -55,11 +56,7 @@ Paste your API key and click **Save**.
 python ownkey.py
 ```
 
-The app starts in the system tray (bottom-right). Right-click → **Settings** to configure your API key.
-
-**4. Get an API key**
-
-Sign up at [console.mistral.ai](https://console.mistral.ai) — Voxtral is available on all paid plans.
+The app starts in the system tray (bottom-right). Right-click → **Settings** to configure your providers.
 
 ---
 
@@ -75,7 +72,8 @@ Sign up at [console.mistral.ai](https://console.mistral.ai) — Voxtral is avail
 
 ### AI rewrite
 
-Two Wispr Flow-style features, both powered by your Mistral API key:
+Two Wispr Flow-style features, powered by the provider configured in the
+**Rewriting** tab:
 
 - **Auto-rewrite dictation** — when enabled in Settings, every transcript is cleaned up before it is typed: filler words removed, self-corrections applied, punctuation fixed, tone and formatting applied per your settings. If the rewrite call fails, the raw transcript is inserted instead.
 - **Rewrite selected text** — highlight text anywhere, hold the rewrite hotkey, and speak what should happen to it. The selection is replaced in place with the rewritten version.
@@ -92,11 +90,28 @@ Two Wispr Flow-style features, both powered by your Mistral API key:
 
 Settings are stored in `%APPDATA%\Ownkey\config.json` and managed through the Settings window.
 
+Audio and rewriting have independent provider presets, credentials, endpoints,
+and models. Model names are retrieved live from the selected provider API; the
+model field remains editable for compatible aliases or custom endpoints.
+
+| Provider | Audio transcription | Rewriting | Model discovery |
+|----------|---------------------|-----------|-----------------|
+| OpenAI | Yes | Yes | `GET /v1/models` |
+| Anthropic | No official audio transcription API | Yes | `GET /v1/models` |
+| Google Gemini | Yes | Yes | `GET /v1beta/models` |
+| Mistral | Yes | Yes | `GET /v1/models` |
+| Ollama | No official audio transcription API | Yes, local or cloud | `GET /api/tags` |
+
+Ollama presets include `http://localhost:11434/api/chat` and
+`https://ollama.com/api/chat`. Ownkey does not bundle or assume any Ollama model;
+use **Refresh** to list the models exposed by the selected endpoint.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `api_key` | *(empty)* | API key used for transcription |
-| `endpoint` | `https://api.mistral.ai/v1/audio/transcriptions` | Transcription endpoint |
-| `model` | `voxtral-mini-latest` | Voxtral model |
+| `audio_provider` | `mistral` | Provider used for transcription |
+| `audio_api_key` | *(empty)* | API key used only for transcription |
+| `audio_endpoint` | `https://api.mistral.ai/v1/audio/transcriptions` | Transcription endpoint |
+| `audio_model` | `voxtral-mini-latest` | Transcription model |
 | `hotkey` | `right alt` | Push-to-talk key |
 | `language` | `auto` | Transcription language (`auto`, `en`, `nl`, `de`, `fr`, …) |
 | `paste_mode` | `true` | Clipboard paste (faster) vs. keystroke-by-keystroke |
@@ -106,10 +121,13 @@ Settings are stored in `%APPDATA%\Ownkey\config.json` and managed through the Se
 | `rewrite_formatting` | `true` | Let auto-rewrite structure paragraphs and bullet lists |
 | `rewrite_custom_instructions` | *(empty)* | Extra free-form instructions applied to auto-rewrite |
 | `rewrite_hotkey` | `right ctrl` | Hold-to-talk key for rewriting the selected text (`off` to disable) |
+| `rewrite_provider` | `mistral` | Provider used for text rewriting |
+| `rewrite_api_key` | *(empty)* | API key used only for rewriting |
 | `rewrite_model` | `mistral-small-latest` | Chat model used for rewrites |
-| `chat_endpoint` | `https://api.mistral.ai/v1/chat/completions` | Chat-completions endpoint used for rewrites |
+| `rewrite_endpoint` | `https://api.mistral.ai/v1/chat/completions` | Endpoint used for rewrites |
 
-API key source: `config.json` (`api_key`) set from the Settings window.
+Existing configs using the former shared `api_key`, `endpoint`, `model`, and
+`chat_endpoint` keys are migrated automatically when loaded.
 
 ---
 
@@ -198,7 +216,8 @@ Check Windows microphone permissions: Settings → Privacy → Microphone.
 Some apps block programmatic `Ctrl+V`. Disable paste mode in Settings.
 
 **API errors?**
-Verify your API key and check you have Voxtral credits at [console.mistral.ai](https://console.mistral.ai).
+Verify the provider, activity-specific API key, endpoint, and selected model in
+Settings. Use **Refresh** to confirm that the provider returns models for the key.
 
 ---
 

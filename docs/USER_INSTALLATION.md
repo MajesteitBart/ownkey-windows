@@ -18,7 +18,7 @@ In practice: users can run Ownkey from one executable file, but they must keep t
 
 - Windows 10 or 11
 - Microphone access enabled in Windows privacy settings
-- A Mistral API key with Voxtral access
+- An API key for a supported audio provider (OpenAI, Google, or Mistral)
 
 ## Install option A (recommended for end users): portable bundle
 
@@ -29,12 +29,14 @@ If a maintainer provides a prebuilt `dist/Ownkey` folder:
 2. Ensure the folder still contains `Ownkey.exe` and accompanying runtime files.
 3. Double-click `Ownkey.exe`.
 4. Right-click the tray icon and open **Settings**.
-5. Set your API key in **Settings** and click **Save**.
+5. Configure the **Audio** provider and, optionally, a different **Rewriting**
+   provider. Refresh each model list, choose models, and click **Save**.
 
-### API key storage
+### Provider and API key storage
 
-- Ownkey reads the API key from `%APPDATA%\Ownkey\config.json` (`api_key`).
-- The recommended way to set it is the in-app **Settings** window.
+- Ownkey reads separate audio and rewrite provider settings from
+  `%APPDATA%\Ownkey\config.json`.
+- The recommended way to configure them is the in-app **Settings** window.
 
 ## Install option B (developer/advanced): run from source
 
@@ -72,7 +74,7 @@ Build output:
 - If no text appears:
   - run as Administrator (for elevated target apps)
   - check microphone permissions
-  - verify API key and credits
+  - verify the activity's provider, API key, selected model, and credits
 
 ## Known limitation: no single-file installer yet
 

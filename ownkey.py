@@ -1,6 +1,6 @@
 """
-Ownkey — Push-to-Talk Voice Keyboard (Voxtral)
-=================================================
+Ownkey — Push-to-Talk Voice Keyboard
+=====================================
 Hold your hotkey, speak, release → text is typed anywhere.
 
 Requirements: sounddevice numpy requests pynput keyboard pyperclip pystray Pillow
@@ -39,6 +39,21 @@ try:
     import requests
 except ImportError:
     sys.exit("Missing: requests  →  pip install requests")
+
+from providers import (
+    AUDIO_PROVIDER_IDS,
+    REWRITE_PROVIDER_IDS,
+    complete_rewrite,
+    default_endpoint,
+    list_available_models,
+    normalize_provider,
+    provider_endpoints,
+    provider_from_endpoint,
+    provider_label,
+    provider_labels,
+    provider_requires_key,
+    transcribe_audio,
+)
 
 try:
     from pynput import keyboard as pynput_keyboard
@@ -85,15 +100,18 @@ CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), AP
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "api_key": "",
-    "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
-    "model": "voxtral-mini-latest",
+    "audio_provider": "mistral",
+    "audio_api_key": "",
+    "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+    "audio_model": "voxtral-mini-latest",
     "hotkey": "right alt",
     "language": "auto",
     "paste_mode": True,
     "ready_chime": False,
     "sample_rate": 16000,
-    "chat_endpoint": "https://api.mistral.ai/v1/chat/completions",
+    "rewrite_provider": "mistral",
+    "rewrite_api_key": "",
+    "rewrite_endpoint": "https://api.mistral.ai/v1/chat/completions",
     "rewrite_model": "mistral-small-latest",
     "auto_rewrite": False,
     "rewrite_tone": "auto",
@@ -267,8 +285,13 @@ def overlay_debug(message: str) -> None:
 
 
 def get_effective_api_key(cfg: dict) -> str:
-    """Return API key stored in Settings/config."""
-    return cfg.get("api_key", "").strip()
+    """Return the audio API key (legacy helper retained for compatibility)."""
+    return str(cfg.get("audio_api_key", cfg.get("api_key", "")) or "").strip()
+
+
+def get_rewrite_api_key(cfg: dict) -> str:
+    """Return the separately configured rewrite API key."""
+    return str(cfg.get("rewrite_api_key", cfg.get("api_key", "")) or "").strip()
 
 
 def sanitize_hotkey(value) -> str:
@@ -307,14 +330,46 @@ def sanitize_rewrite_hotkey(value, main_hotkey: str) -> str:
 
 def load_config() -> dict:
     """Load config from disk, falling back to defaults for missing keys."""
-    cfg = dict(DEFAULT_CONFIG)
+    on_disk = {}
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
                 on_disk = json.load(fh)
-            cfg.update(on_disk)
         except Exception:
-            pass
+            on_disk = {}
+
+    # Migrate the original shared connection into independent audio and
+    # rewrite settings. Explicit new keys always take precedence.
+    audio_endpoint = on_disk.get(
+        "audio_endpoint", on_disk.get("endpoint", DEFAULT_CONFIG["audio_endpoint"])
+    )
+    rewrite_endpoint = on_disk.get(
+        "rewrite_endpoint", on_disk.get("chat_endpoint", DEFAULT_CONFIG["rewrite_endpoint"])
+    )
+    migrated = {
+        "audio_provider": on_disk.get(
+            "audio_provider", provider_from_endpoint(audio_endpoint, "mistral")
+        ),
+        "audio_api_key": on_disk.get("audio_api_key", on_disk.get("api_key", "")),
+        "audio_endpoint": audio_endpoint,
+        "audio_model": on_disk.get(
+            "audio_model", on_disk.get("model", DEFAULT_CONFIG["audio_model"])
+        ),
+        "rewrite_provider": on_disk.get(
+            "rewrite_provider", provider_from_endpoint(rewrite_endpoint, "mistral")
+        ),
+        "rewrite_api_key": on_disk.get("rewrite_api_key", on_disk.get("api_key", "")),
+        "rewrite_endpoint": rewrite_endpoint,
+    }
+    cfg = dict(DEFAULT_CONFIG)
+    cfg.update(on_disk)
+    cfg.update(migrated)
+    cfg["audio_provider"] = normalize_provider(cfg.get("audio_provider"), "mistral")
+    if cfg["audio_provider"] not in AUDIO_PROVIDER_IDS:
+        cfg["audio_provider"] = "mistral"
+        cfg["audio_endpoint"] = DEFAULT_CONFIG["audio_endpoint"]
+        cfg["audio_model"] = DEFAULT_CONFIG["audio_model"]
+    cfg["rewrite_provider"] = normalize_provider(cfg.get("rewrite_provider"), "mistral")
     cfg["hotkey"] = sanitize_hotkey(cfg.get("hotkey"))
     cfg["language"] = sanitize_language(cfg.get("language"))
     cfg["rewrite_tone"] = sanitize_rewrite_tone(cfg.get("rewrite_tone"))
@@ -1125,22 +1180,15 @@ def audio_duration_seconds(audio_frames: list, sample_rate: int) -> float:
 # ---------------------------------------------------------------------------
 
 def transcribe(wav_bytes: bytes, cfg: dict) -> str:
-    """POST WAV audio to Voxtral API, return transcribed text."""
-    headers = {"Authorization": f"Bearer {get_effective_api_key(cfg)}"}
-    data = {"model": cfg["model"]}
-    if cfg.get("language") and cfg["language"] != "auto":
-        data["language"] = cfg["language"]
-    files = {"file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav")}
-    resp = requests.post(
-        cfg["endpoint"],
-        headers=headers,
-        data=data,
-        files=files,
-        timeout=30,
+    """Transcribe WAV audio with the independently selected audio provider."""
+    return transcribe_audio(
+        cfg.get("audio_provider", DEFAULT_CONFIG["audio_provider"]),
+        get_effective_api_key(cfg),
+        cfg.get("audio_endpoint", DEFAULT_CONFIG["audio_endpoint"]),
+        cfg.get("audio_model", DEFAULT_CONFIG["audio_model"]),
+        wav_bytes,
+        cfg.get("language", DEFAULT_CONFIG["language"]),
     )
-    resp.raise_for_status()
-    result = resp.json()
-    return result.get("text", "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1164,31 +1212,15 @@ REWRITE_SELECTION_PROMPT = (
 
 
 def chat_complete(cfg: dict, system_prompt: str, user_prompt: str) -> str:
-    """POST a chat-completion request, return the assistant text."""
-    headers = {
-        "Authorization": f"Bearer {get_effective_api_key(cfg)}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": cfg.get("rewrite_model", DEFAULT_CONFIG["rewrite_model"]),
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    resp = requests.post(
-        cfg.get("chat_endpoint", DEFAULT_CONFIG["chat_endpoint"]),
-        headers=headers,
-        json=body,
-        timeout=30,
+    """Run a rewrite request with the independently selected text provider."""
+    return complete_rewrite(
+        cfg.get("rewrite_provider", DEFAULT_CONFIG["rewrite_provider"]),
+        get_rewrite_api_key(cfg),
+        cfg.get("rewrite_endpoint", DEFAULT_CONFIG["rewrite_endpoint"]),
+        cfg.get("rewrite_model", DEFAULT_CONFIG["rewrite_model"]),
+        system_prompt,
+        user_prompt,
     )
-    resp.raise_for_status()
-    result = resp.json()
-    try:
-        return (result["choices"][0]["message"]["content"] or "").strip()
-    except (KeyError, IndexError, TypeError):
-        return ""
 
 
 def build_dictation_rewrite_prompt(cfg: dict) -> str:
@@ -1302,7 +1334,9 @@ class SettingsWindow:
         win = tk.Tk()
         self._win = win
         win.title(f"{APP_NAME} — Settings")
-        win.resizable(False, False)
+        win.geometry("680x610")
+        win.minsize(620, 560)
+        win.resizable(True, True)
         win.configure(bg=self.BG)
         win.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1327,34 +1361,59 @@ class SettingsWindow:
             "Courier New",
         )
 
-        pad = {"padx": 14, "pady": 5}
+        pad = {"padx": 14, "pady": 6}
 
-        def label(text, row):
-            tk.Label(win, text=text, bg=self.BG, fg=self.MUTED, anchor="w",
+        def label(parent, text, row):
+            tk.Label(parent, text=text, bg=self.BG, fg=self.MUTED, anchor="w",
                      font=("Segoe UI", 10)).grid(row=row, column=0, sticky="w", **pad)
 
-        def entry(row, show=None):
-            e = tk.Entry(win, bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.ACCENT,
-                         relief="flat", width=42, show=show or "",
-                         highlightthickness=1, highlightbackground=self.LINE,
-                         highlightcolor=self.ACCENT, font=("Segoe UI", 10))
-            e.grid(row=row, column=1, sticky="ew", ipady=3, **pad)
-            return e
+        def entry(parent, row, show=None):
+            widget = tk.Entry(
+                parent,
+                bg=self.ENTRY_BG,
+                fg=self.FG,
+                insertbackground=self.ACCENT,
+                relief="flat",
+                show=show or "",
+                highlightthickness=1,
+                highlightbackground=self.LINE,
+                highlightcolor=self.ACCENT,
+                font=("Segoe UI", 10),
+            )
+            widget.grid(row=row, column=1, sticky="ew", ipady=4, **pad)
+            return widget
 
-        def combo(values, row):
+        def combo(parent, values, row, state="readonly"):
             var = tk.StringVar(win)
-            c = ttk.Combobox(win, textvariable=var, values=values, state="readonly",
-                             width=40, font=("Segoe UI", 10))
-            c.grid(row=row, column=1, sticky="ew", **pad)
-            return var, c
+            widget = ttk.Combobox(
+                parent,
+                textvariable=var,
+                values=values,
+                state=state,
+                font=("Segoe UI", 10),
+            )
+            widget.grid(row=row, column=1, sticky="ew", **pad)
+            return var, widget
 
-        def section(text, row, top_pad=18):
-            holder = tk.Frame(win, bg=self.BG)
+        def section(parent, text, row, top_pad=18):
+            holder = tk.Frame(parent, bg=self.BG)
             holder.grid(row=row, column=0, columnspan=2, sticky="w",
                         padx=14, pady=(top_pad, 4))
             tk.Frame(holder, width=7, height=7, bg=self.ACCENT).pack(side="left")
             tk.Label(holder, text="  " + " ".join(text.upper()), bg=self.BG,
                      fg=self.MUTED, font=(mono, 8)).pack(side="left")
+
+        def hint(parent, text, row):
+            tk.Label(
+                parent,
+                text=text,
+                bg=self.BG,
+                fg=self.MUTED,
+                justify="left",
+                anchor="w",
+                wraplength=600,
+                font=("Segoe UI", 9),
+            ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 8))
 
         # Style combobox to match the brand theme (best-effort under clam)
         style = ttk.Style(win)
@@ -1374,171 +1433,319 @@ class SettingsWindow:
                   foreground=[("readonly", self.FG)],
                   selectbackground=[("readonly", self.ENTRY_BG)],
                   selectforeground=[("readonly", self.FG)])
+        style.configure(
+            "Ownkey.TNotebook",
+            background=self.BG,
+            borderwidth=0,
+            tabmargins=(14, 8, 14, 0),
+        )
+        style.configure(
+            "Ownkey.TNotebook.Tab",
+            background=self.ENTRY_BG,
+            foreground=self.MUTED,
+            padding=(18, 8),
+            borderwidth=0,
+        )
+        style.map(
+            "Ownkey.TNotebook.Tab",
+            background=[("selected", self.LINE)],
+            foreground=[("selected", self.FG)],
+        )
         win.option_add("*TCombobox*Listbox.background", self.ENTRY_BG)
         win.option_add("*TCombobox*Listbox.foreground", self.FG)
         win.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
         win.option_add("*TCombobox*Listbox.selectForeground", BRAND_KEY)
 
-        row = 0
-
         # Header: wordmark + mono subtitle
         header = tk.Frame(win, bg=self.BG)
-        header.grid(row=row, column=0, columnspan=2, sticky="w", padx=14, pady=(16, 2))
+        header.pack(fill="x", padx=14, pady=(16, 8))
         tk.Label(header, text="own", bg=self.BG, fg=self.FG,
                  font=("Segoe UI", 17, "bold")).pack(side="left")
         tk.Label(header, text="key", bg=self.BG, fg=self.ACCENT,
                  font=("Segoe UI", 17, "bold")).pack(side="left")
         tk.Label(header, text="   S E T T I N G S", bg=self.BG, fg=self.MUTED,
                  font=(mono, 9)).pack(side="left", pady=(6, 0))
-        row += 1
 
-        section("Connection", row, top_pad=10)
-        row += 1
+        notebook = ttk.Notebook(win, style="Ownkey.TNotebook")
+        notebook.pack(fill="both", expand=True)
+        general_tab = tk.Frame(notebook, bg=self.BG)
+        audio_tab = tk.Frame(notebook, bg=self.BG)
+        rewrite_tab = tk.Frame(notebook, bg=self.BG)
+        notebook.add(general_tab, text="General")
+        notebook.add(audio_tab, text="Audio")
+        notebook.add(rewrite_tab, text="Rewriting")
+        for tab in (general_tab, audio_tab, rewrite_tab):
+            tab.columnconfigure(1, weight=1)
 
-        # API Key
-        label("API key", row)
-        e_apikey = entry(row, show="•")
-        e_apikey.insert(0, cfg.get("api_key", ""))
-        row += 1
+        general_row = 0
+        section(general_tab, "Dictation", general_row, top_pad=16)
+        general_row += 1
 
-        # Endpoint
-        label("Endpoint", row)
-        e_endpoint = entry(row)
-        e_endpoint.insert(0, cfg.get("endpoint", DEFAULT_CONFIG["endpoint"]))
-        row += 1
-
-        # Model
-        label("Model", row)
-        e_model = entry(row)
-        e_model.insert(0, cfg.get("model", DEFAULT_CONFIG["model"]))
-        row += 1
-
-        section("Dictation", row)
-        row += 1
-
-        # Hotkey
-        label("Hotkey", row)
-        v_hotkey, c_hotkey = combo(HOTKEY_LIST, row)
+        label(general_tab, "Hotkey", general_row)
+        v_hotkey, c_hotkey = combo(general_tab, HOTKEY_LIST, general_row)
         hotkey_value = sanitize_hotkey(cfg.get("hotkey", DEFAULT_CONFIG["hotkey"]))
         v_hotkey.set(hotkey_value)
         c_hotkey.current(HOTKEY_LIST.index(hotkey_value))
-        row += 1
+        general_row += 1
 
-        # Language
-        label("Language", row)
-        v_lang, c_lang = combo(LANGUAGE_LIST, row)
-        language_value = sanitize_language(cfg.get("language", DEFAULT_CONFIG["language"]))
-        v_lang.set(language_value)
-        c_lang.current(LANGUAGE_LIST.index(language_value))
-        row += 1
-
-        # Paste mode
         v_paste = tk.BooleanVar(win, value=cfg.get("paste_mode", True))
-        cb_paste = tk.Checkbutton(win, text="Paste mode (faster)",
+        cb_paste = tk.Checkbutton(general_tab, text="Paste mode (faster)",
                                   variable=v_paste,
                                   bg=self.BG, fg=self.FG,
                                   selectcolor=self.ENTRY_BG,
                                   activebackground=self.BG, activeforeground=self.FG)
-        cb_paste.grid(row=row, column=1, sticky="w", **pad)
-        row += 1
+        cb_paste.grid(row=general_row, column=1, sticky="w", **pad)
+        general_row += 1
 
-        # Ready chime
         v_ready_chime = tk.BooleanVar(
             win, value=bool(cfg.get("ready_chime", DEFAULT_CONFIG["ready_chime"]))
         )
         cb_ready_chime = tk.Checkbutton(
-            win,
+            general_tab,
             text="Play ready chime",
             variable=v_ready_chime,
             bg=self.BG, fg=self.FG,
             selectcolor=self.ENTRY_BG,
             activebackground=self.BG, activeforeground=self.FG,
         )
-        cb_ready_chime.grid(row=row, column=1, sticky="w", **pad)
-        row += 1
+        cb_ready_chime.grid(row=general_row, column=1, sticky="w", **pad)
+        general_row += 1
 
-        # Start with Windows
         v_startup = tk.BooleanVar(win, value=is_startup_enabled())
-        cb_startup = tk.Checkbutton(win, text="Start with Windows",
+        cb_startup = tk.Checkbutton(general_tab, text="Start with Windows",
                                     variable=v_startup,
                                     bg=self.BG, fg=self.FG,
                                     selectcolor=self.ENTRY_BG,
                                     activebackground=self.BG, activeforeground=self.FG)
-        cb_startup.grid(row=row, column=1, sticky="w", **pad)
-        row += 1
+        cb_startup.grid(row=general_row, column=1, sticky="w", **pad)
 
-        # --- AI rewrite section ---
-        section("AI Rewrite", row)
-        row += 1
+        def build_provider_controls(parent, activity, provider_ids, row):
+            prefix = "audio" if activity == "audio" else "rewrite"
+            provider_value = normalize_provider(
+                cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"])
+            )
+            labels = provider_labels(provider_ids)
+
+            label(parent, "Provider", row)
+            v_provider, c_provider = combo(parent, labels, row)
+            v_provider.set(provider_label(provider_value))
+            row += 1
+
+            label(parent, "API key", row)
+            e_api_key = entry(parent, row, show="•")
+            e_api_key.insert(0, cfg.get(f"{prefix}_api_key", ""))
+            row += 1
+
+            label(parent, "Endpoint", row)
+            v_endpoint, c_endpoint = combo(parent, provider_endpoints(provider_value, activity), row, "normal")
+            v_endpoint.set(
+                cfg.get(f"{prefix}_endpoint", DEFAULT_CONFIG[f"{prefix}_endpoint"])
+            )
+            row += 1
+
+            label(parent, "Model", row)
+            model_holder = tk.Frame(parent, bg=self.BG)
+            model_holder.grid(row=row, column=1, sticky="ew", **pad)
+            model_holder.columnconfigure(0, weight=1)
+            v_model = tk.StringVar(win)
+            c_model = ttk.Combobox(
+                model_holder,
+                textvariable=v_model,
+                state="normal",
+                font=("Segoe UI", 10),
+            )
+            c_model.grid(row=0, column=0, sticky="ew")
+            v_model.set(cfg.get(f"{prefix}_model", DEFAULT_CONFIG[f"{prefix}_model"]))
+
+            refresh_button = tk.Button(
+                model_holder,
+                text="Refresh",
+                bg=self.BTN_BG,
+                fg=self.FG,
+                activebackground=self.LINE,
+                activeforeground=self.FG,
+                relief="flat",
+                cursor="hand2",
+                padx=12,
+                pady=3,
+            )
+            refresh_button.grid(row=0, column=1, padx=(8, 0))
+
+            def selected_provider():
+                return normalize_provider(v_provider.get(), provider_value)
+
+            def on_provider_change(_event=None):
+                provider_id = selected_provider()
+                endpoints = provider_endpoints(provider_id, activity)
+                c_endpoint.configure(values=endpoints)
+                v_endpoint.set(default_endpoint(provider_id, activity))
+                # Credentials are provider-specific. Never carry a key into a
+                # newly selected provider where it could be sent accidentally.
+                e_api_key.delete(0, tk.END)
+                v_model.set("")
+                c_model.configure(values=())
+
+            def fetch_models():
+                provider_id = selected_provider()
+                api_key = e_api_key.get().strip()
+                endpoint = v_endpoint.get().strip()
+                refresh_button.configure(text="Loading…", state="disabled")
+                result_queue = queue.Queue(maxsize=1)
+
+                def worker():
+                    try:
+                        models = list_available_models(
+                            provider_id, api_key, endpoint, activity
+                        )
+                        result_queue.put(("loaded", models))
+                    except Exception as exc:
+                        result_queue.put(("failed", str(exc)))
+
+                def poll_result():
+                    try:
+                        status, payload = result_queue.get_nowait()
+                    except queue.Empty:
+                        win.after(50, poll_result)
+                        return
+                    refresh_button.configure(text="Refresh", state="normal")
+                    if status == "loaded":
+                        c_model.configure(values=payload)
+                        if not payload:
+                            messagebox.showinfo(
+                                APP_NAME,
+                                f"No models were returned by {provider_label(provider_id)}.",
+                                parent=win,
+                            )
+                    else:
+                        messagebox.showerror(
+                            APP_NAME,
+                            f"Could not retrieve models:\n{payload}",
+                            parent=win,
+                        )
+
+                threading.Thread(target=worker, daemon=True).start()
+                win.after(50, poll_result)
+
+            c_provider.bind("<<ComboboxSelected>>", on_provider_change)
+            refresh_button.configure(command=fetch_models)
+            return {
+                "provider": v_provider,
+                "api_key": e_api_key,
+                "endpoint": v_endpoint,
+                "model": v_model,
+            }, row + 1
+
+        audio_row = 0
+        section(audio_tab, "Audio transcription", audio_row, top_pad=16)
+        audio_row += 1
+        hint(
+            audio_tab,
+            "Used for dictation and for spoken rewrite instructions. Provider presets "
+            "are limited to APIs with official audio transcription support.",
+            audio_row,
+        )
+        audio_row += 1
+        audio_controls, audio_row = build_provider_controls(
+            audio_tab, "audio", AUDIO_PROVIDER_IDS, audio_row
+        )
+
+        label(audio_tab, "Language", audio_row)
+        v_lang, c_lang = combo(audio_tab, LANGUAGE_LIST, audio_row)
+        language_value = sanitize_language(cfg.get("language", DEFAULT_CONFIG["language"]))
+        v_lang.set(language_value)
+        c_lang.current(LANGUAGE_LIST.index(language_value))
+
+        rewrite_row = 0
+        section(rewrite_tab, "AI Rewrite", rewrite_row, top_pad=16)
+        rewrite_row += 1
+        hint(
+            rewrite_tab,
+            "Uses its own provider, key, endpoint, and model. Ollama includes local "
+            "and cloud endpoint presets; its model list always comes from that API.",
+            rewrite_row,
+        )
+        rewrite_row += 1
+        rewrite_controls, rewrite_row = build_provider_controls(
+            rewrite_tab, "rewrite", REWRITE_PROVIDER_IDS, rewrite_row
+        )
 
         v_auto_rewrite = tk.BooleanVar(
             win, value=bool(cfg.get("auto_rewrite", DEFAULT_CONFIG["auto_rewrite"]))
         )
         cb_auto_rewrite = tk.Checkbutton(
-            win,
+            rewrite_tab,
             text="Auto-rewrite dictation (filler words, grammar, tone)",
             variable=v_auto_rewrite,
             bg=self.BG, fg=self.FG,
             selectcolor=self.ENTRY_BG,
             activebackground=self.BG, activeforeground=self.FG,
         )
-        cb_auto_rewrite.grid(row=row, column=0, columnspan=2, sticky="w", **pad)
-        row += 1
+        cb_auto_rewrite.grid(row=rewrite_row, column=0, columnspan=2, sticky="w", **pad)
+        rewrite_row += 1
 
-        # Tone
-        label("Tone", row)
-        v_tone, c_tone = combo(REWRITE_TONE_LIST, row)
+        label(rewrite_tab, "Tone", rewrite_row)
+        v_tone, c_tone = combo(rewrite_tab, REWRITE_TONE_LIST, rewrite_row)
         tone_value = sanitize_rewrite_tone(cfg.get("rewrite_tone", DEFAULT_CONFIG["rewrite_tone"]))
         v_tone.set(tone_value)
         c_tone.current(REWRITE_TONE_LIST.index(tone_value))
-        row += 1
+        rewrite_row += 1
 
-        # Smart formatting
         v_formatting = tk.BooleanVar(
             win, value=bool(cfg.get("rewrite_formatting", DEFAULT_CONFIG["rewrite_formatting"]))
         )
         cb_formatting = tk.Checkbutton(
-            win,
+            rewrite_tab,
             text="Smart formatting (paragraphs, bullet lists)",
             variable=v_formatting,
             bg=self.BG, fg=self.FG,
             selectcolor=self.ENTRY_BG,
             activebackground=self.BG, activeforeground=self.FG,
         )
-        cb_formatting.grid(row=row, column=0, columnspan=2, sticky="w", **pad)
-        row += 1
+        cb_formatting.grid(row=rewrite_row, column=0, columnspan=2, sticky="w", **pad)
+        rewrite_row += 1
 
-        # Custom instructions
-        label("Custom instructions", row)
-        e_custom = entry(row)
+        label(rewrite_tab, "Custom instructions", rewrite_row)
+        e_custom = entry(rewrite_tab, rewrite_row)
         e_custom.insert(0, cfg.get("rewrite_custom_instructions", ""))
-        row += 1
+        rewrite_row += 1
 
-        # Rewrite hotkey (hold, speak an instruction to rewrite the selected text)
-        label("Rewrite hotkey", row)
-        v_rewrite_hotkey, c_rewrite_hotkey = combo(REWRITE_HOTKEY_LIST, row)
+        label(rewrite_tab, "Rewrite hotkey", rewrite_row)
+        v_rewrite_hotkey, c_rewrite_hotkey = combo(
+            rewrite_tab, REWRITE_HOTKEY_LIST, rewrite_row
+        )
         rewrite_hotkey_value = sanitize_rewrite_hotkey(
             cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value
         )
         v_rewrite_hotkey.set(rewrite_hotkey_value)
         c_rewrite_hotkey.current(REWRITE_HOTKEY_LIST.index(rewrite_hotkey_value))
-        row += 1
 
-        # Rewrite model
-        label("Rewrite model", row)
-        e_rewrite_model = entry(row)
-        e_rewrite_model.insert(0, cfg.get("rewrite_model", DEFAULT_CONFIG["rewrite_model"]))
-        row += 1
-
-        # Buttons
         btn_frame = tk.Frame(win, bg=self.BG)
-        btn_frame.grid(row=row, column=0, columnspan=2, pady=12)
+        btn_frame.pack(fill="x", padx=14, pady=12)
 
         def save():
             new_cfg = dict(cfg)
-            new_cfg["api_key"] = e_apikey.get().strip()
-            new_cfg["endpoint"] = e_endpoint.get().strip()
-            new_cfg["model"] = e_model.get().strip()
+            new_cfg["audio_provider"] = normalize_provider(audio_controls["provider"].get())
+            new_cfg["audio_api_key"] = audio_controls["api_key"].get().strip()
+            new_cfg["audio_endpoint"] = audio_controls["endpoint"].get().strip()
+            new_cfg["audio_model"] = audio_controls["model"].get().strip()
+            new_cfg["rewrite_provider"] = normalize_provider(rewrite_controls["provider"].get())
+            new_cfg["rewrite_api_key"] = rewrite_controls["api_key"].get().strip()
+            new_cfg["rewrite_endpoint"] = rewrite_controls["endpoint"].get().strip()
+            new_cfg["rewrite_model"] = rewrite_controls["model"].get().strip()
+            for legacy_key in ("api_key", "endpoint", "model", "chat_endpoint"):
+                new_cfg.pop(legacy_key, None)
+            if not new_cfg["audio_endpoint"] or not new_cfg["audio_model"]:
+                messagebox.showwarning(
+                    APP_NAME, "Choose an audio endpoint and model before saving.", parent=win
+                )
+                notebook.select(audio_tab)
+                return
+            if not new_cfg["rewrite_endpoint"] or not new_cfg["rewrite_model"]:
+                messagebox.showwarning(
+                    APP_NAME, "Choose a rewrite endpoint and model before saving.", parent=win
+                )
+                notebook.select(rewrite_tab)
+                return
             new_cfg["hotkey"] = sanitize_hotkey(v_hotkey.get() or cfg.get("hotkey"))
             new_cfg["language"] = sanitize_language(v_lang.get() or cfg.get("language"))
             new_cfg["paste_mode"] = v_paste.get()
@@ -1547,7 +1754,6 @@ class SettingsWindow:
             new_cfg["rewrite_tone"] = sanitize_rewrite_tone(v_tone.get())
             new_cfg["rewrite_formatting"] = v_formatting.get()
             new_cfg["rewrite_custom_instructions"] = e_custom.get().strip()
-            new_cfg["rewrite_model"] = e_rewrite_model.get().strip() or DEFAULT_CONFIG["rewrite_model"]
             chosen_rewrite_hotkey = v_rewrite_hotkey.get()
             new_cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(
                 chosen_rewrite_hotkey, new_cfg["hotkey"]
@@ -1570,15 +1776,14 @@ class SettingsWindow:
                   bg=self.FG, fg=BRAND_KEY, activebackground="#FFFFFF",
                   activeforeground=BRAND_KEY, relief="flat",
                   font=("Segoe UI", 10, "bold"), cursor="hand2",
-                  padx=24, pady=5).pack(side="left", padx=6)
+                  padx=24, pady=5).pack(side="right", padx=6)
 
         tk.Button(btn_frame, text="Cancel", command=self._on_close,
                   bg=self.BTN_BG, fg=self.FG, activebackground=self.LINE,
                   activeforeground=self.FG, relief="flat",
                   font=("Segoe UI", 10), cursor="hand2",
-                  padx=24, pady=5).pack(side="left", padx=6)
+                  padx=24, pady=5).pack(side="right", padx=6)
 
-        win.columnconfigure(1, weight=1)
         win.eval("tk::PlaceWindow . center")
         win.mainloop()
         self._win = None
@@ -1686,7 +1891,7 @@ class OwnkeyApp:
 
     def _connection_loop(self) -> None:
         while not self._connection_stop.is_set():
-            endpoint = self.cfg.get("endpoint", DEFAULT_CONFIG["endpoint"])
+            endpoint = self.cfg.get("audio_endpoint", DEFAULT_CONFIG["audio_endpoint"])
             online = endpoint_reachable(endpoint)
             self._connection_state = "online" if online else "offline"
             self._overlay.update(connection=self._connection_state)
@@ -1947,9 +2152,17 @@ class OwnkeyApp:
                 self._set_state("idle")
                 return
 
-            if not get_effective_api_key(self.cfg):
+            audio_provider = self.cfg.get(
+                "audio_provider", DEFAULT_CONFIG["audio_provider"]
+            )
+            audio_endpoint = self.cfg.get(
+                "audio_endpoint", DEFAULT_CONFIG["audio_endpoint"]
+            )
+            if provider_requires_key(audio_provider, audio_endpoint) and not get_effective_api_key(
+                self.cfg
+            ):
                 self._notify_error(
-                    "No API key set. Open Settings from the tray icon and save your API key."
+                    "No audio API key set. Open Settings and configure the Audio tab."
                 )
                 self._overlay.update(processing="error")
                 self._set_state("idle")
@@ -2016,6 +2229,20 @@ class OwnkeyApp:
             return
 
         self._overlay.update(message="Rewriting...")
+        rewrite_provider = self.cfg.get(
+            "rewrite_provider", DEFAULT_CONFIG["rewrite_provider"]
+        )
+        rewrite_endpoint = self.cfg.get(
+            "rewrite_endpoint", DEFAULT_CONFIG["rewrite_endpoint"]
+        )
+        if provider_requires_key(rewrite_provider, rewrite_endpoint) and not get_rewrite_api_key(
+            self.cfg
+        ):
+            self._overlay.update(processing="error")
+            self._notify_error(
+                "No rewrite API key set. Open Settings and configure the Rewriting tab."
+            )
+            return
         result = rewrite_selection_text(selection, instruction, self.cfg)
         overlay_debug(f"rewrite result chars={len(result)}")
         if not result:
@@ -2169,8 +2396,12 @@ class OwnkeyApp:
         self._start_connection_monitor()
         self.refresh_connection_status()
 
-        # Prompt for API key on first run
-        if not get_effective_api_key(self.cfg):
+        # Prompt for audio provider configuration on first run
+        audio_provider = self.cfg.get("audio_provider", DEFAULT_CONFIG["audio_provider"])
+        audio_endpoint = self.cfg.get("audio_endpoint", DEFAULT_CONFIG["audio_endpoint"])
+        if provider_requires_key(audio_provider, audio_endpoint) and not get_effective_api_key(
+            self.cfg
+        ):
             threading.Thread(target=self._first_run_prompt, daemon=True).start()
 
         self.start_listener()
@@ -2190,10 +2421,10 @@ class OwnkeyApp:
         self._tray.run()
 
     def _first_run_prompt(self) -> None:
-        """Show a reminder to configure the API key."""
+        """Show a reminder to configure the audio provider."""
         time.sleep(2)
         self._notify_error(
-            "Welcome! Open Settings from the tray icon and save your API key."
+            "Welcome! Open Settings and configure your audio provider in the Audio tab."
         )
 
 
