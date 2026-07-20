@@ -98,6 +98,28 @@
   }
 }
 
+@keyframes ok-check-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ok-check-in {
+  animation: ok-check-in 180ms cubic-bezier(0, 0, 0.2, 1) both;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ok-check-in {
+    animation: none;
+  }
+}
+
 @keyframes ownkey-overlay-in {
   from {
     opacity: 0;

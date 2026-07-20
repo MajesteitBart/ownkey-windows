@@ -24,7 +24,7 @@ interface BrandWaveformProps {
   tint: string | null;
 }
 
-function usePrefersReducedMotion(): boolean {
+export function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
@@ -83,8 +83,32 @@ export function BrandWaveform({ mode, level, tint }: BrandWaveformProps) {
   // Errors hold the bars visibly low; other static modes rest at full profile.
   const staticScale = mode === "error" ? 0.3 : undefined;
 
+  // Done swaps the bars for a checkmark drawn in the same visual language:
+  // bar-width strokes, rounded caps, flat tint. Same footprint as the bars.
+  if (mode === "done") {
+    return (
+      <div aria-hidden="true" className="flex h-[22px] w-[32px] items-center justify-center">
+        <svg
+          viewBox="0 0 32 22"
+          width={32}
+          height={22}
+          className={reducedMotion ? undefined : "ok-check-in"}
+        >
+          <polyline
+            points="6,12 13,18 26,5"
+            fill="none"
+            stroke={tint ?? BRAND.green}
+            strokeWidth={4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+    );
+  }
+
   return (
-    <div aria-hidden="true" className="flex h-[22px] items-center gap-[3px]">
+    <div aria-hidden="true" className="flex h-[22px] w-[32px] items-center gap-[3px]">
       {REST_HEIGHTS.map((rest, index) => (
         <span
           key={index}

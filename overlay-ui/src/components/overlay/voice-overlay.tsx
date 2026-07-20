@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { BrandWaveform } from "@/components/ui/brand-waveform";
+import { BrandWaveform, usePrefersReducedMotion } from "@/components/ui/brand-waveform";
 import { BRAND, deriveMode, modePresentation, statusLabel } from "@/lib/overlay";
 import type { OverlayState } from "@/types/overlay";
 
@@ -51,6 +51,20 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
     return () => window.clearTimeout(timer);
   }, [presentation]);
 
+  // The pill hugs its content; animate the label slot's width so state
+  // changes ("Listening" -> "Transcribing") resize the pill fluidly instead
+  // of snapping. The hidden measurer span renders the incoming label
+  // off-screen so the target width is known before the transition starts.
+  const reducedMotion = usePrefersReducedMotion();
+  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const [labelWidth, setLabelWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (el) {
+      setLabelWidth(Math.min(210, el.offsetWidth));
+    }
+  }, [presentation.label]);
+
   // Keep rendering briefly after visible flips off so the exit fade can play.
   const [mounted, setMounted] = useState(state.visible);
   if (state.visible && !mounted) {
@@ -94,7 +108,21 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
         }}
       >
         <BrandWaveform mode={mode} level={level} tint={presentation.barTint} />
-        <span className="relative inline-flex items-center">
+        <span
+          aria-hidden="true"
+          ref={measureRef}
+          className="pointer-events-none invisible absolute left-0 top-0"
+          style={{ ...labelStyle, maxWidth: "none" }}
+        >
+          {presentation.label}
+        </span>
+        <span
+          className="relative inline-flex items-center overflow-hidden"
+          style={{
+            width: labelWidth ?? "auto",
+            transition: reducedMotion ? "none" : "width 160ms cubic-bezier(0, 0, 0.2, 1)",
+          }}
+        >
           <span
             key={presentation.key}
             role="status"
