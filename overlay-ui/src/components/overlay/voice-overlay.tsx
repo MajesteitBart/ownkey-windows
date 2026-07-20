@@ -58,12 +58,31 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
   const reducedMotion = usePrefersReducedMotion();
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [labelWidth, setLabelWidth] = useState<number | null>(null);
+  // The label font loads lazily on first use, so the first pill can be
+  // measured with fallback-font metrics and end up a few pixels short.
+  // Preload the exact face and re-measure whenever any font finishes loading.
+  const [fontEpoch, setFontEpoch] = useState(0);
+  useEffect(() => {
+    let disposed = false;
+    const bump = () => {
+      if (!disposed) setFontEpoch((n) => n + 1);
+    };
+    document.fonts?.load('500 11px "JetBrains Mono"').then(bump).catch(() => {});
+    document.fonts?.addEventListener?.("loadingdone", bump);
+    return () => {
+      disposed = true;
+      document.fonts?.removeEventListener?.("loadingdone", bump);
+    };
+  }, []);
   useLayoutEffect(() => {
     const el = measureRef.current;
     if (el) {
-      setLabelWidth(Math.min(210, el.offsetWidth));
+      // offsetWidth rounds to whole pixels, which can round *down* and shave
+      // a fraction off the slot — enough to trigger the ellipsis. Measure
+      // fractionally, round up, and keep a 1px cushion.
+      setLabelWidth(Math.min(210, Math.ceil(el.getBoundingClientRect().width) + 1));
     }
-  }, [presentation.label]);
+  }, [presentation.label, fontEpoch]);
 
   // Keep rendering briefly after visible flips off so the exit fade can play.
   const [mounted, setMounted] = useState(state.visible);
@@ -91,57 +110,62 @@ export function VoiceOverlay({ state }: VoiceOverlayProps) {
   } as const;
 
   return (
-    <div
-      className="pointer-events-none select-none transition-[opacity,transform] duration-200 ease-out [animation:ownkey-overlay-in_0.22s_ease-out]"
-      style={{
-        opacity: state.visible ? 1 : 0,
-        transform: state.visible ? "scale(1)" : "scale(0.96) translateY(5px)",
-      }}
-    >
+    <>
+      {/* Label measurer. Lives outside the animated subtree: the pill's
+          entry animation scales the overlay, and a transformed ancestor
+          would shrink getBoundingClientRect and truncate the first label. */}
+      <span
+        aria-hidden="true"
+        ref={measureRef}
+        className="pointer-events-none invisible fixed left-0 top-0"
+        style={{ ...labelStyle, maxWidth: "none" }}
+      >
+        {presentation.label}
+      </span>
       <div
-        className="inline-flex items-center gap-[14px] rounded-full border px-5 py-3"
+        className="pointer-events-none select-none transition-[opacity,transform] duration-200 ease-out [animation:ownkey-overlay-in_0.22s_ease-out]"
         style={{
-          background: BRAND.key,
-          borderColor: BRAND.hairline,
-          boxShadow:
-            "0 24px 50px -12px rgba(0,0,0,0.9), 0 0 40px -18px rgba(222,95,20,0.55)",
+          opacity: state.visible ? 1 : 0,
+          transform: state.visible ? "scale(1)" : "scale(0.96) translateY(5px)",
         }}
       >
-        <BrandWaveform mode={mode} level={level} tint={presentation.barTint} />
-        <span
-          aria-hidden="true"
-          ref={measureRef}
-          className="pointer-events-none invisible absolute left-0 top-0"
-          style={{ ...labelStyle, maxWidth: "none" }}
-        >
-          {presentation.label}
-        </span>
-        <span
-          className="relative inline-flex items-center overflow-hidden"
+        <div
+          className="inline-flex items-center gap-[14px] rounded-full border px-5 py-3"
           style={{
-            width: labelWidth ?? "auto",
-            transition: reducedMotion ? "none" : "width 160ms cubic-bezier(0, 0, 0.2, 1)",
+            background: BRAND.key,
+            borderColor: BRAND.hairline,
+            boxShadow:
+              "0 24px 50px -12px rgba(0,0,0,0.9), 0 0 40px -18px rgba(222,95,20,0.55)",
           }}
         >
+          <BrandWaveform mode={mode} level={level} tint={presentation.barTint} />
           <span
-            key={presentation.key}
-            role="status"
-            className={outgoingPresentation ? "ownkey-state-in" : undefined}
-            style={{ ...labelStyle, color: presentation.labelColor }}
+            className="relative inline-flex items-center overflow-hidden"
+            style={{
+              width: labelWidth ?? "auto",
+              transition: reducedMotion ? "none" : "width 160ms cubic-bezier(0, 0, 0.2, 1)",
+            }}
           >
-            {presentation.label}
-          </span>
-          {outgoingPresentation ? (
             <span
-              aria-hidden="true"
-              className="ownkey-state-out absolute left-0 top-1/2 -translate-y-1/2"
-              style={{ ...labelStyle, color: outgoingPresentation.labelColor }}
+              key={presentation.key}
+              role="status"
+              className={outgoingPresentation ? "ownkey-state-in" : undefined}
+              style={{ ...labelStyle, color: presentation.labelColor }}
             >
-              {outgoingPresentation.label}
+              {presentation.label}
             </span>
-          ) : null}
-        </span>
+            {outgoingPresentation ? (
+              <span
+                aria-hidden="true"
+                className="ownkey-state-out absolute left-0 top-1/2 -translate-y-1/2"
+                style={{ ...labelStyle, color: outgoingPresentation.labelColor }}
+              >
+                {outgoingPresentation.label}
+              </span>
+            ) : null}
+          </span>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
