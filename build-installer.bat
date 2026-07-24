@@ -30,7 +30,7 @@ if errorlevel 1 goto :fail
 
 echo.
 echo Installer created:
-echo   dist-installer\Ownkey-Setup.exe
+echo   dist-installer\Ownkey-Setup-0.3.0.exe
 exit /b 0
 
 :missing_backend
