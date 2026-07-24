@@ -8,6 +8,9 @@ AppId={{F42503CB-EDB7-4BCB-B739-123F4B75DE6A}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL=https://ownkey.bvdm.ai
+AppSupportURL=https://github.com/MajesteitBart/ownkey-windows/issues
+AppUpdatesURL=https://github.com/MajesteitBart/ownkey-windows/releases
 DefaultDirName={autopf}\Ownkey
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -24,6 +27,10 @@ WizardSmallImageFile=assets\wizard-small-100.bmp,assets\wizard-small-150.bmp,ass
 UninstallDisplayIcon={app}\ownkey.ico
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
+VersionInfoVersion=0.3.0.0
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription=Ownkey for Windows installer
+VersionInfoCopyright=Copyright (C) 2026 Ownkey
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -36,7 +43,9 @@ Source: "..\dist\Ownkey\*"; DestDir: "{app}\backend"; Flags: ignoreversion recur
 Source: "..\overlay-ui\src-tauri\target\release\ownkey-overlay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\ownkey.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\USER_INSTALLATION.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "..\assets\readme\*.png"; DestDir: "{app}\assets\readme"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\ownkey.ico"

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { BRAND, type OverlayMode } from "@/lib/overlay";
 
 // Rest heights trace the logo's waveform muzzle (docs/OVERLAY_DESIGN_SPEC.md).
@@ -24,26 +25,16 @@ interface BrandWaveformProps {
   tint: string | null;
 }
 
-export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = (event: MediaQueryListEvent) => setReduced(event.matches);
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
-}
-
 export function BrandWaveform({ mode, level, tint }: BrandWaveformProps) {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
   const levelRef = useRef(level);
-  levelRef.current = level;
   const reducedMotion = usePrefersReducedMotion();
 
   const audioDriven = mode === "listening_audio" && !reducedMotion;
+
+  useEffect(() => {
+    levelRef.current = level;
+  }, [level]);
 
   useEffect(() => {
     if (!audioDriven) {

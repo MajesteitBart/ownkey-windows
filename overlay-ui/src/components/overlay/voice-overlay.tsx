@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { BrandWaveform, usePrefersReducedMotion } from "@/components/ui/brand-waveform";
+import { BrandWaveform } from "@/components/ui/brand-waveform";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { BRAND, deriveMode, modePresentation, statusLabel } from "@/lib/overlay";
 import type { OverlayState } from "@/types/overlay";
 
