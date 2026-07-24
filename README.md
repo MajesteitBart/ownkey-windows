@@ -1,226 +1,202 @@
-# Ownkey for Windows 🎙️
+<div align="center">
+  <a href="https://ownkey.bvdm.ai">
+    <img src="assets/readme/ownkey-windows-title.png" alt="Ownkey for Windows — push-to-talk dictation for the desktop" width="687">
+  </a>
+</div>
 
-**Push-to-talk voice keyboard for Windows with bring-your-own-key AI providers.**
+<p align="center">
+  <a href="https://ownkey.bvdm.ai"><strong>Website</strong></a>
+  ·
+  <a href="https://github.com/MajesteitBart/ownkey-keyboard"><strong>Ownkey for Android</strong></a>
+  ·
+  <a href="#03--get-started"><strong>Get started</strong></a>
+</p>
 
-Hold a hotkey → speak → release → your words are typed anywhere on screen.
+<p align="center">
+  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-F3F1EC?style=flat-square&logo=windows11&logoColor=0E0E0E">
+  <img alt="Python and Tauri" src="https://img.shields.io/badge/Python%20%2B%20Tauri-171717?style=flat-square&logo=tauri&logoColor=DE5F14">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-9DCB3B?style=flat-square"></a>
+  <a href="https://ownkey.bvdm.ai"><img alt="ownkey.bvdm.ai" src="https://img.shields.io/badge/ownkey.bvdm.ai-DE5F14?style=flat-square"></a>
+</p>
 
-Ownkey is a keyboard you actually own: modern AI input without sending your words to someone else's servers. You bring your own API key; your keystrokes stay yours.
+<p align="center">
+  <img src="assets/readme/ownkey-windows-dictation.png" alt="Ownkey listening while dictating text into a Windows app" width="687">
+</p>
 
-Part of the Ownkey family:
+Ownkey for Windows is push-to-talk dictation and AI rewrite for the desktop.
+Hold a hotkey, speak, release, and your words are typed into whichever app has
+focus.
 
-- **Ownkey for Windows** — this repository
-- **[Ownkey Keyboard (Android)](https://github.com/MajesteitBart/ownkey-keyboard)**
-- Website: [ownkey.bvdm.ai](https://ownkey.bvdm.ai) *(planned)*
+You bring the provider and API key. Ownkey has no account, subscription, relay
+server, or telemetry: requests travel directly from your PC to the provider you
+configure.
 
----
+> **Your keys. Your voice. Your space.**
 
-## Features
+## 01 · The promise
 
-- 🎤 **Push-to-talk** — hold your hotkey, speak, release; text appears instantly
-- 🔔 **Ready ping** — a short chime plays when the microphone is armed, so you know exactly when to start speaking
-- ⌨️ **Types anywhere** — works in any app: browser, Word, Slack, VS Code, etc.
-- 🔔 **System tray** — runs quietly in the background, coloured icon shows state
-- ⚙️ **Configurable** — hotkey, language, paste mode, model, API endpoint
-- 🚀 **Windows startup** — optionally auto-starts with Windows
+### Private by default. Not by settings.
 
-## End-user install status
+| Private by default | No data collection | Bring your own key | Open by design |
+|---|---|---|---|
+| Privacy is the starting point, not a setting to find. | No Ownkey telemetry, account, or hosted service. | Your provider, your account, your control. | MIT-licensed and developed in the open. |
 
-Ownkey is **not yet shipped as a one-click installer** (`.msi`/setup) or a true **single self-contained executable**.
+Ownkey does send audio—and selected text when you use rewriting—to your chosen
+AI provider. It does not put an Ownkey-operated server in the middle.
 
-Current packaging is a **portable folder build** created with PyInstaller `--onedir`:
+## 02 · What it does
 
-- `dist\Ownkey\Ownkey.exe`
-- plus required runtime files in the same folder
+<p align="center">
+  <img src="assets/readme/ownkey-windows-features.png" alt="Ownkey features: hold to talk, type anywhere, rewrite on the fly, and use your choice of AI provider" width="588">
+</p>
 
-That means users must keep the full `dist\Ownkey` folder together.
+The ready chime is optional. Audio and rewriting can use independent providers,
+keys, endpoints, and models, and Ownkey can start automatically with Windows.
 
-For complete user-facing installation steps, see **[`docs/USER_INSTALLATION.md`](docs/USER_INSTALLATION.md)**.
+## 03 · Get started
 
-## Quick Start (run from source)
+Ownkey is currently available from GitHub. Check
+[Releases](https://github.com/MajesteitBart/ownkey-windows/releases) for a
+prebuilt Windows installer. If no release asset is listed, run it from source or
+build the installer locally.
 
-**1. Install dependencies**
+### Run from source
 
-```bash
-pip install -r requirements.txt
+Requires Windows 10 or 11 and Python 3.11+.
+
+```powershell
+git clone https://github.com/MajesteitBart/ownkey-windows.git
+cd ownkey-windows
+py -m pip install -r requirements.txt
+py ownkey.py
 ```
 
-**2. Configure providers in Settings**
+Ownkey starts in the system tray. Right-click the tray icon, open **Settings**,
+choose providers for **Audio** and **Rewriting**, enter your API keys, refresh
+the model lists, and save.
 
-Start the app, then right-click the tray icon and open **Settings**.
-Choose separate providers for **Audio** and **Rewriting**, enter their API keys,
-click **Refresh** to retrieve available models, then click **Save**.
+### Build the Windows installer
 
-**3. Run**
+The repository includes an Inno Setup installer build. Install Python 3.11+,
+Node.js with pnpm, Rust with the MSVC toolchain, Visual Studio Build Tools, and
+[Inno Setup 6](https://jrsoftware.org/isinfo.php), then run:
 
-```bash
-python ownkey.py
+```bat
+build-installer.bat
 ```
 
-The app starts in the system tray (bottom-right). Right-click → **Settings** to configure your providers.
+The versioned installer is written to `dist-installer\`. It packages the
+PyInstaller backend, Tauri overlay, shortcuts, uninstaller, and Ownkey branding.
 
----
+## 04 · Use it
 
-## Usage
+| Action | Default |
+|---|---|
+| Dictate | Hold `Right Alt`, speak, then release |
+| Rewrite selected text | Select text, hold `Right Ctrl`, speak an instruction, then release |
+| Open Settings | Right-click the tray icon → **Settings** |
+| Quit | Right-click the tray icon → **Quit** |
 
-| Action | How |
-|--------|-----|
-| Start recording | Hold **Right Alt**, wait for the short ping, then speak |
-| Stop & transcribe | Release the hotkey |
-| Rewrite selected text | Highlight text, hold the rewrite hotkey (**Right Ctrl** by default), speak an instruction ("make this more formal", "translate to English", "turn into bullet points"), release |
-| Open Settings | Right-click tray icon → **Settings** |
-| Quit | Right-click tray icon → **Quit** |
+Examples of rewrite instructions include “make this more formal”, “translate to
+English”, and “turn this into bullet points”.
 
 ### AI rewrite
 
-Two Wispr Flow-style features, powered by the provider configured in the
-**Rewriting** tab:
+- **Auto-rewrite dictation** removes filler words, applies self-corrections,
+  fixes punctuation, and follows your tone, formatting, and custom instructions.
+  If rewriting fails, Ownkey inserts the raw transcript.
+- **Rewrite selected text** captures the selected text and your spoken
+  instruction, sends both to the configured rewrite provider, and replaces the
+  selection with the result.
 
-- **Auto-rewrite dictation** — when enabled in Settings, every transcript is cleaned up before it is typed: filler words removed, self-corrections applied, punctuation fixed, tone and formatting applied per your settings. If the rewrite call fails, the raw transcript is inserted instead.
-- **Rewrite selected text** — highlight text anywhere, hold the rewrite hotkey, and speak what should happen to it. The selection is replaced in place with the rewritten version.
+## 05 · Bring your own key
 
-### Tray icon states
+1. **Get a key** from a supported provider, or configure a compatible endpoint.
+2. **Paste it once** in Settings and choose the model you want to use.
+3. **Speak**. Audio goes from your device to your provider; text comes back and
+   is inserted into the focused app.
 
-| Color | State |
-|-------|-------|
-| 🔘 Dark gray | Idle — ready |
-| 🔴 Red | Recording |
-| 🟠 Orange | Transcribing |
+No Ownkey account. No Ownkey subscription. No Ownkey telemetry. Pay your
+provider, not us.
+
+### Provider support
+
+Audio and rewriting can use different providers and credentials.
+
+| Provider | Audio transcription | Rewriting | Model discovery |
+|---|---:|---:|---|
+| OpenAI | Yes | Yes | `/v1/models` |
+| Anthropic | — | Yes | `/v1/models` |
+| Google Gemini | Yes | Yes | `/v1beta/models` |
+| Mistral | Yes | Yes | `/v1/models` |
+| Ollama | — | Yes, local or cloud | `/api/tags` |
+
+Endpoints and model names remain editable for compatible aliases or custom
+deployments. Ollama presets include local `http://localhost:11434/api/chat` and
+cloud `https://ollama.com/api/chat` endpoints; Ownkey does not bundle a model.
 
 ## Configuration
 
-Settings are stored in `%APPDATA%\Ownkey\config.json` and managed through the Settings window.
+Settings are managed in the app and stored in
+`%APPDATA%\Ownkey\config.json`. API keys are stored locally in that file, so
+treat it as sensitive.
 
-Audio and rewriting have independent provider presets, credentials, endpoints,
-and models. Model names are retrieved live from the selected provider API; the
-model field remains editable for compatible aliases or custom endpoints.
+| Setting | Default | Purpose |
+|---|---|---|
+| Audio provider | Mistral | Transcription provider |
+| Audio model | `voxtral-mini-latest` | Transcription model |
+| Dictation hotkey | `Right Alt` | Hold-to-talk key |
+| Language | Auto | Automatic detection or a fixed language |
+| Paste mode | On | Clipboard paste instead of key-by-key typing |
+| Ready chime | Off | Sound when the microphone is armed |
+| Rewrite provider | Mistral | Text rewrite provider |
+| Rewrite model | `mistral-small-latest` | Chat model used for rewrites |
+| Rewrite hotkey | `Right Ctrl` | Hold-to-talk rewrite key; can be disabled |
+| Auto-rewrite | Off | Clean every dictation before insertion |
 
-| Provider | Audio transcription | Rewriting | Model discovery |
-|----------|---------------------|-----------|-----------------|
-| OpenAI | Yes | Yes | `GET /v1/models` |
-| Anthropic | No official audio transcription API | Yes | `GET /v1/models` |
-| Google Gemini | Yes | Yes | `GET /v1beta/models` |
-| Mistral | Yes | Yes | `GET /v1/models` |
-| Ollama | No official audio transcription API | Yes, local or cloud | `GET /api/tags` |
+Older configs using shared `api_key`, `endpoint`, `model`, and `chat_endpoint`
+fields are migrated automatically.
 
-Ollama presets include `http://localhost:11434/api/chat` and
-`https://ollama.com/api/chat`. Ownkey does not bundle or assume any Ollama model;
-use **Refresh** to list the models exposed by the selected endpoint.
+## Development
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `audio_provider` | `mistral` | Provider used for transcription |
-| `audio_api_key` | *(empty)* | API key used only for transcription |
-| `audio_endpoint` | `https://api.mistral.ai/v1/audio/transcriptions` | Transcription endpoint |
-| `audio_model` | `voxtral-mini-latest` | Transcription model |
-| `hotkey` | `right alt` | Push-to-talk key |
-| `language` | `auto` | Transcription language (`auto`, `en`, `nl`, `de`, `fr`, …) |
-| `paste_mode` | `true` | Clipboard paste (faster) vs. keystroke-by-keystroke |
-| `sample_rate` | `16000` | Microphone sample rate (Hz) |
-| `auto_rewrite` | `false` | Clean up every dictation with AI before typing it |
-| `rewrite_tone` | `auto` | Tone for auto-rewrite: `auto`, `professional`, `casual`, `friendly`, `concise` |
-| `rewrite_formatting` | `true` | Let auto-rewrite structure paragraphs and bullet lists |
-| `rewrite_custom_instructions` | *(empty)* | Extra free-form instructions applied to auto-rewrite |
-| `rewrite_hotkey` | `right ctrl` | Hold-to-talk key for rewriting the selected text (`off` to disable) |
-| `rewrite_provider` | `mistral` | Provider used for text rewriting |
-| `rewrite_api_key` | *(empty)* | API key used only for rewriting |
-| `rewrite_model` | `mistral-small-latest` | Chat model used for rewrites |
-| `rewrite_endpoint` | `https://api.mistral.ai/v1/chat/completions` | Endpoint used for rewrites |
-
-Existing configs using the former shared `api_key`, `endpoint`, `model`, and
-`chat_endpoint` keys are migrated automatically when loaded.
-
----
-
-## Build portable EXE bundle (developer)
+Build the portable backend bundle:
 
 ```bat
 build.bat
 ```
 
-Output: `dist\Ownkey\Ownkey.exe`.
+Output: `dist\Ownkey\Ownkey.exe`. This is a folder-based PyInstaller bundle;
+keep the complete `dist\Ownkey` directory together.
 
-Important: this is a **folder-based bundle**, not a single self-contained executable. Share the full `dist\Ownkey` directory with users.
+Build the Tauri overlay:
 
-Requires PyInstaller (`pip install pyinstaller`). The build script installs it automatically.
-
-### Full Windows build (backend + overlay)
-
-If you want the Python backend and Tauri overlay both buildable on Windows:
-
-1. Install prerequisites on Windows:
-   - Python 3.11+
-   - Node.js + pnpm
-   - Rust toolchain (`rustup`) with MSVC
-   - Visual Studio Build Tools (Desktop development with C++)
-2. Build backend:
-
-```bat
-build.bat
-```
-
-3. Build overlay app:
-
-```bat
+```powershell
 cd overlay-ui
 pnpm install
 pnpm build
 ```
 
-Overlay artifacts are produced in `overlay-ui/src-tauri/target/release/bundle/`.
+Run the provider tests:
 
----
-
-## Tauri Overlay UI (React + Tailwind/shadcn-style)
-
-An experimental desktop overlay UI is available in `overlay-ui/`.
-
-Run it:
-
-```bash
-cd overlay-ui
-pnpm install
-pnpm dev
+```powershell
+py -m unittest discover -s tests
 ```
 
-It listens for overlay state payloads on UDP `127.0.0.1:38485`.
-See `overlay-ui/README.md` for payload format and bridge details.
-
-Set `OWNKEY_TAURI_OVERLAY_ONLY=1` to disable Tkinter overlay and use the Tauri overlay only.
-
----
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `sounddevice` | Microphone capture |
-| `numpy` | Audio buffer |
-| `requests` | API calls |
-| `pynput` | Global hotkey detection |
-| `keyboard` | Text output |
-| `pyperclip` | Clipboard (paste mode) |
-| `pystray` | System tray icon |
-| `Pillow` | Icon rendering |
-
----
+The overlay receives local state updates over UDP `127.0.0.1:38485`. See
+[overlay-ui/README.md](overlay-ui/README.md) for its payload format and
+development controls.
 
 ## Troubleshooting
 
-**Hotkey not working?**
-Run as Administrator — some elevated apps block non-admin global hotkeys.
-
-**No audio?**
-Check Windows microphone permissions: Settings → Privacy → Microphone.
-
-**Paste mode not working?**
-Some apps block programmatic `Ctrl+V`. Disable paste mode in Settings.
-
-**API errors?**
-Verify the provider, activity-specific API key, endpoint, and selected model in
-Settings. Use **Refresh** to confirm that the provider returns models for the key.
-
----
+- **Hotkey does nothing in an elevated app:** run Ownkey as Administrator.
+  Windows blocks non-elevated apps from typing into elevated ones.
+- **No audio:** allow microphone access in Windows Settings under
+  **Privacy & security → Microphone**.
+- **Paste mode fails in one app:** disable paste mode so Ownkey types the text
+  key by key.
+- **Provider or model errors:** verify the activity-specific key and endpoint,
+  then use **Refresh** in Settings to confirm that the provider returns models.
 
 ## License
 
-MIT
+[MIT](LICENSE) · © 2026 Ownkey
