@@ -12,7 +12,10 @@ PROVIDER_PRESETS = {
     "openai": {
         "label": "OpenAI",
         "audio_endpoints": ("https://api.openai.com/v1/audio/transcriptions",),
-        "rewrite_endpoints": ("https://api.openai.com/v1/chat/completions",),
+        "rewrite_endpoints": (
+            "https://api.openai.com/v1/responses",
+            "https://api.openai.com/v1/chat/completions",
+        ),
         "models_endpoint": "https://api.openai.com/v1/models",
     },
     "anthropic": {
@@ -156,6 +159,16 @@ def _extract_openai_text(result: dict) -> str:
     return ""
 
 
+def _extract_openai_response_text(result: dict) -> str:
+    return "".join(
+        str(content.get("text", ""))
+        for output in result.get("output", [])
+        if isinstance(output, dict) and output.get("type") == "message"
+        for content in output.get("content", [])
+        if isinstance(content, dict) and content.get("type") == "output_text"
+    ).strip()
+
+
 def _extract_google_text(result: dict) -> str:
     try:
         parts = result["candidates"][0]["content"]["parts"]
@@ -252,6 +265,19 @@ def complete_rewrite(
     headers = _auth_headers(provider_id, api_key)
     headers["Content-Type"] = "application/json"
 
+    if provider_id == "openai" and urlparse(endpoint).path.rstrip("/").endswith(
+        "/responses"
+    ):
+        body = {
+            "model": model,
+            "instructions": system_prompt,
+            "input": user_prompt,
+            "store": False,
+        }
+        response = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
+        response.raise_for_status()
+        return _extract_openai_response_text(response.json())
+
     if provider_id in {"openai", "mistral"}:
         body = {
             "model": model,
@@ -332,9 +358,10 @@ def models_endpoint(provider: str, activity_endpoint: str) -> str:
     if not endpoint:
         return str(PROVIDER_PRESETS[provider_id]["models_endpoint"])
     if provider_id in {"openai", "mistral"}:
-        return _replace_endpoint_path(
-            endpoint, ("/audio/transcriptions", "/chat/completions"), "/models"
-        )
+        suffixes = ("/audio/transcriptions", "/chat/completions")
+        if provider_id == "openai":
+            suffixes += ("/responses",)
+        return _replace_endpoint_path(endpoint, suffixes, "/models")
     if provider_id == "anthropic":
         return _replace_endpoint_path(endpoint, ("/messages",), "/models")
     if provider_id == "google":
