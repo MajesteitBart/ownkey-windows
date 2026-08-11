@@ -125,7 +125,7 @@ Audio and rewriting can use different providers and credentials.
 
 | Provider | Audio transcription | Rewriting | Model discovery |
 |---|---:|---:|---|
-| OpenAI | Yes | Yes | `/v1/models` |
+| OpenAI | Yes | Yes, Responses API (Chat Completions compatible) | `/v1/models` |
 | Anthropic | — | Yes | `/v1/models` |
 | Google Gemini | Yes | Yes | `/v1beta/models` |
 | Mistral | Yes | Yes | `/v1/models` |

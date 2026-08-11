@@ -38,6 +38,15 @@ class ProviderPresetTests(unittest.TestCase):
             ),
         )
 
+    def test_openai_prefers_responses_and_keeps_chat_completions_compatible(self):
+        self.assertEqual(
+            providers.provider_endpoints("openai", "rewrite"),
+            (
+                "https://api.openai.com/v1/responses",
+                "https://api.openai.com/v1/chat/completions",
+            ),
+        )
+
     def test_model_endpoints_are_derived_from_activity_endpoints(self):
         cases = {
             "openai": (
@@ -66,6 +75,14 @@ class ProviderPresetTests(unittest.TestCase):
                 self.assertEqual(
                     providers.models_endpoint(provider, activity_endpoint), expected
                 )
+
+    def test_openai_responses_endpoint_derives_models_endpoint(self):
+        self.assertEqual(
+            providers.models_endpoint(
+                "openai", "https://api.openai.com/v1/responses"
+            ),
+            "https://api.openai.com/v1/models",
+        )
 
 
 class ModelDiscoveryTests(unittest.TestCase):
@@ -139,6 +156,44 @@ class ModelDiscoveryTests(unittest.TestCase):
 
 
 class ActivityAdapterTests(unittest.TestCase):
+    def test_openai_rewrite_uses_responses_api_shape(self):
+        payload = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "rewritten response"}
+                    ],
+                }
+            ]
+        }
+        with patch.object(
+            providers.requests, "post", return_value=FakeResponse(payload)
+        ) as request:
+            result = providers.complete_rewrite(
+                "openai",
+                "key",
+                "https://api.openai.com/v1/responses",
+                "gpt-test",
+                "system guidance",
+                "user text",
+            )
+
+        self.assertEqual(result, "rewritten response")
+        body = request.call_args.kwargs["json"]
+        self.assertEqual(
+            body,
+            {
+                "model": "gpt-test",
+                "instructions": "system guidance",
+                "input": "user text",
+                "store": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args.args[0], "https://api.openai.com/v1/responses"
+        )
+
     def test_google_audio_uses_inline_wav_and_selected_model(self):
         payload = {
             "candidates": [{"content": {"parts": [{"text": "hello world"}]}}]
