@@ -3,6 +3,19 @@
 #define MyAppPublisher "Ownkey"
 #define MyAppExeName "backend\\Ownkey.exe"
 
+#ifndef BackendSourceDir
+  #define BackendSourceDir "..\dist\Ownkey"
+#endif
+#ifndef OverlaySourceFile
+  #define OverlaySourceFile "..\overlay-ui\src-tauri\target\release\ownkey-overlay.exe"
+#endif
+#ifndef InstallerOutputDir
+  #define InstallerOutputDir "..\dist-installer-dev"
+#endif
+#ifndef InstallerOutputBaseFilename
+  #define InstallerOutputBaseFilename "Ownkey-Setup-" + MyAppVersion + "-UNSIGNED-DEV"
+#endif
+
 [Setup]
 AppId={{F42503CB-EDB7-4BCB-B739-123F4B75DE6A}
 AppName={#MyAppName}
@@ -15,8 +28,8 @@ DefaultDirName={autopf}\Ownkey
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
-OutputDir=..\dist-installer
-OutputBaseFilename=Ownkey-Setup-{#MyAppVersion}
+OutputDir={#InstallerOutputDir}
+OutputBaseFilename={#InstallerOutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -32,6 +45,16 @@ VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Ownkey for Windows installer
 VersionInfoCopyright=Copyright (C) 2026 Ownkey
 
+#ifdef ReleaseSigning
+SignTool=ownkey_release_sha256
+SignedUninstaller=yes
+SignToolRetryCount=2
+SignToolRetryDelay=2000
+SignToolMinimumTimeBetween=1000
+#else
+SignedUninstaller=no
+#endif
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -39,8 +62,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-Source: "..\dist\Ownkey\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\overlay-ui\src-tauri\target\release\ownkey-overlay.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BackendSourceDir}\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#OverlaySourceFile}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\ownkey.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

@@ -7,6 +7,7 @@
     "dev": "tauri dev",
     "dev:web": "vite",
     "build": "tauri build",
+    "build:binary": "tauri build --no-bundle --ci",
     "build:web": "tsc -b && vite build",
     "build:debug": "tauri build --debug",
     "lint": "eslint .",

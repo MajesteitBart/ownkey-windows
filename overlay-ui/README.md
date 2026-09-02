@@ -28,11 +28,15 @@ This starts:
 pnpm build:debug
 ```
 
-or release:
+or a release executable without standalone Tauri installer bundles:
 
 ```bash
-pnpm build
+pnpm build:binary
 ```
+
+`pnpm build` also creates Tauri's MSI and NSIS bundles. Ownkey's Windows
+installer pipeline uses `build:binary` and packages only the resulting
+`src-tauri/target/release/ownkey-overlay.exe` in Inno Setup.
 
 ## UI Design Workflow
 
