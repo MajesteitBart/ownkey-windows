@@ -205,6 +205,11 @@ def _extract_openai_text(result: dict) -> str:
 
 
 def _extract_openai_response_text(result: dict) -> str:
+    status = result.get("status")
+    if status not in {None, "completed"}:
+        raise ProviderConfigurationError(
+            f"Rewrite response is {status}. No partial text was inserted; try a shorter selection."
+        )
     return "".join(
         str(content.get("text", ""))
         for output in result.get("output", [])

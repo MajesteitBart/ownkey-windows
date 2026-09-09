@@ -237,6 +237,21 @@ class ActivityAdapterTests(unittest.TestCase):
                                                        "model", "edit", "hello"), "edited")
         self.assertEqual(request.call_args.kwargs["json"]["instructions"], "edit")
 
+    def test_responses_never_inserts_unfinished_output(self):
+        for provider in ("openai", "custom"):
+            for status in ("incomplete", "failed", "cancelled", "queued", "in_progress"):
+                payload = {
+                    "status": status,
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
+                }
+                with self.subTest(provider=provider, status=status), patch.object(
+                    providers.requests, "post", return_value=FakeResponse(payload)
+                ):
+                    with self.assertRaisesRegex(providers.ProviderConfigurationError, status):
+                        providers.complete_rewrite(provider, "", "https://example.test/v1/responses",
+                                                   "model", "edit", "text")
+
     def test_openai_rewrite_uses_responses_api_shape(self):
         payload = {
             "output": [
