@@ -86,4 +86,3 @@ class OverlayProcessTests(unittest.TestCase):
         self.assertEqual(launch.call_args.kwargs["creationflags"], ownkey.subprocess.CREATE_NO_WINDOW)
         app._stop_tauri_overlay()
         process.terminate.assert_called_once()
-
