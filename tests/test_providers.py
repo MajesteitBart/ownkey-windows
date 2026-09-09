@@ -19,14 +19,37 @@ class FakeResponse:
         return self.payload
 
 
+class ApiErrorTests(unittest.TestCase):
+    def test_falsey_403_response_preserves_provider_explanation(self):
+        response = providers.requests.Response()
+        response.status_code = 403
+        response._content = json.dumps({"error": {"message":
+            "This model requires 18+ age confirmation. Confirm at https://openrouter.ai/settings/preferences."
+        }}).encode()
+        self.assertFalse(response)
+        error = providers.requests.HTTPError(response=response)
+        message = providers.describe_api_error(error)
+        self.assertIn("API error 403", message)
+        self.assertIn("18+ age confirmation", message)
+        self.assertIn("https://openrouter.ai/settings/preferences", message)
+
+    def test_plain_text_and_missing_responses(self):
+        response = providers.requests.Response()
+        response.status_code = 502
+        response._content = b"Upstream temporarily unavailable"
+        self.assertIn("Upstream temporarily unavailable", providers.describe_api_error(
+            providers.requests.HTTPError(response=response)))
+        self.assertIn("No response", providers.describe_api_error(providers.requests.HTTPError()))
+
+
 class ProviderPresetTests(unittest.TestCase):
     def test_audio_and_rewrite_capabilities_are_explicit(self):
         self.assertEqual(
-            providers.AUDIO_PROVIDER_IDS, ("openai", "google", "mistral")
+            providers.AUDIO_PROVIDER_IDS, ("openai", "google", "mistral", "custom")
         )
         self.assertEqual(
             providers.REWRITE_PROVIDER_IDS,
-            ("openai", "anthropic", "google", "mistral", "ollama"),
+            ("openai", "anthropic", "google", "mistral", "ollama", "openrouter", "custom"),
         )
 
     def test_ollama_has_local_and_cloud_endpoint_presets(self):
@@ -91,6 +114,9 @@ class ModelDiscoveryTests(unittest.TestCase):
             ("openai", "audio"),
             ("anthropic", "rewrite"),
             ("mistral", "rewrite"),
+            ("openrouter", "rewrite"),
+            ("custom", "rewrite"),
+            ("custom", "audio"),
         )
         for provider, activity in cases:
             with self.subTest(provider=provider), patch.object(
@@ -156,6 +182,76 @@ class ModelDiscoveryTests(unittest.TestCase):
 
 
 class ActivityAdapterTests(unittest.TestCase):
+    def test_small_context_server_accepts_rewrite_budget(self):
+        def server(_url, **kwargs):
+            # This local model has a 4,096-token context; its prompt uses 3,072.
+            if 3072 + kwargs["json"]["max_tokens"] > 4096:
+                raise providers.requests.HTTPError("Prompt plus output exceeds model context")
+            return FakeResponse({"choices": [{"message": {"content": "edited"}}]})
+
+        with patch.object(providers.requests, "post", side_effect=server):
+            self.assertEqual(providers.complete_rewrite(
+                "custom", "", "http://localhost:1234/v1/chat/completions",
+                "small-context-model", "edit", "source text"), "edited")
+
+    def test_output_limit_never_returns_a_partial_rewrite(self):
+        payload = {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}
+        with patch.object(providers.requests, "post", return_value=FakeResponse(payload)):
+            with self.assertRaisesRegex(providers.ProviderConfigurationError, "output limit"):
+                providers.complete_rewrite("openrouter", "key", providers.default_endpoint("openrouter", "rewrite"),
+                                           "model", "edit", "long text")
+
+    def test_compatible_rewrite_preserves_url_model_and_auth(self):
+        for provider, endpoint, key in (
+            ("openrouter", "https://openrouter.ai/api/v1/chat/completions", "router-key"),
+            ("custom", "http://localhost:1234/v1/chat/completions", ""),
+            ("custom", "https://example.test/proxy/v2/chat/completions", "custom-key"),
+        ):
+            with self.subTest(provider=provider, endpoint=endpoint), patch.object(
+                providers.requests, "post",
+                return_value=FakeResponse({"choices": [{"message": {"content": "edited"}}]}),
+            ) as request:
+                result = providers.complete_rewrite(provider, key, endpoint, "vendor/model", "edit", "hello")
+                self.assertEqual(result, "edited")
+                self.assertEqual(request.call_args.args[0], endpoint)
+                self.assertEqual(request.call_args.kwargs["json"]["model"], "vendor/model")
+                self.assertEqual(request.call_args.kwargs["json"]["max_tokens"], 1024)
+                self.assertEqual(request.call_args.kwargs["headers"].get("Authorization"),
+                                 f"Bearer {key}" if key else None)
+                self.assertEqual(providers.models_endpoint(provider, endpoint),
+                                 endpoint.replace("/chat/completions", "/models"))
+
+    def test_custom_audio_supports_optional_auth_and_multipart(self):
+        with patch.object(providers.requests, "post", return_value=FakeResponse({"text": "hello"})) as request:
+            result = providers.transcribe_audio("custom", "", "http://localhost:1234/v1/audio/transcriptions",
+                                                "whisper", b"wav", "nl")
+        self.assertEqual(result, "hello")
+        self.assertFalse(providers.provider_requires_key("custom"))
+        self.assertEqual(request.call_args.kwargs["data"], {"model": "whisper", "language": "nl"})
+        self.assertEqual(request.call_args.kwargs["files"]["file"][1], b"wav")
+
+    def test_custom_responses_api(self):
+        payload = {"output": [{"type": "message", "content": [{"type": "output_text", "text": "edited"}]}]}
+        with patch.object(providers.requests, "post", return_value=FakeResponse(payload)) as request:
+            self.assertEqual(providers.complete_rewrite("custom", "", "http://localhost:1234/v1/responses",
+                                                       "model", "edit", "hello"), "edited")
+        self.assertEqual(request.call_args.kwargs["json"]["instructions"], "edit")
+
+    def test_responses_never_inserts_unfinished_output(self):
+        for provider in ("openai", "custom"):
+            for status in ("incomplete", "failed", "cancelled", "queued", "in_progress"):
+                payload = {
+                    "status": status,
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
+                }
+                with self.subTest(provider=provider, status=status), patch.object(
+                    providers.requests, "post", return_value=FakeResponse(payload)
+                ):
+                    with self.assertRaisesRegex(providers.ProviderConfigurationError, status):
+                        providers.complete_rewrite(provider, "", "https://example.test/v1/responses",
+                                                   "model", "edit", "text")
+
     def test_openai_rewrite_uses_responses_api_shape(self):
         payload = {
             "output": [
@@ -256,6 +352,25 @@ class ActivityAdapterTests(unittest.TestCase):
 
 
 class ConfigMigrationTests(unittest.TestCase):
+    def test_custom_and_openrouter_configs_preserve_provider_endpoint_and_model(self):
+        for provider, endpoint in (
+            ("custom", "http://localhost:1234/v1/chat/completions"),
+            ("custom", "https://example.test/proxy/v1/responses"),
+            ("openrouter", "https://openrouter.ai/api/v1/chat/completions"),
+        ):
+            for explicit in (False, True):
+                config = {"rewrite_endpoint": endpoint, "rewrite_model": "vendor/model"}
+                if explicit:
+                    config["rewrite_provider"] = provider
+                with self.subTest(provider=provider, explicit=explicit), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "config.json"
+                    path.write_text(json.dumps(config), encoding="utf-8")
+                    with patch.object(ownkey, "CONFIG_FILE", str(path)):
+                        loaded = ownkey.load_config()
+                    self.assertEqual(loaded["rewrite_provider"], provider)
+                    self.assertEqual(loaded["rewrite_endpoint"], endpoint)
+                    self.assertEqual(loaded["rewrite_model"], "vendor/model")
+
     def test_old_shared_mistral_config_migrates_to_both_activities(self):
         legacy = {
             "api_key": "legacy-key",

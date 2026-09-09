@@ -15,6 +15,34 @@ const TASKBAR_MARGIN_PX: i32 = 40;
 // Keep the OS window up long enough for the webview's exit fade to play.
 const EXIT_FADE_MS: u64 = 280;
 
+// A process handle stays tied to this parent even if Windows later reuses its PID.
+// Wait on a worker thread so the window's event loop remains responsive.
+#[cfg(windows)]
+fn watch_parent() {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    let Ok(value) = std::env::var("OWNKEY_PARENT_PID") else {
+        return; // Standalone overlay development has no owning backend.
+    };
+    let pid = value.parse::<u32>().expect("invalid OWNKEY_PARENT_PID");
+    thread::spawn(move || unsafe {
+        let parent = OpenProcess(0x0010_0000, 0, pid); // SYNCHRONIZE
+        if parent.is_null() {
+            std::process::exit(0); // The backend may have exited during startup.
+        }
+        let result = WaitForSingleObject(parent, u32::MAX);
+        CloseHandle(parent);
+        std::process::exit(if result == 0 { 0 } else { 1 });
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct OverlayState {
@@ -275,6 +303,8 @@ fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    watch_parent();
     let shared = Arc::new(SharedOverlayState::default());
     let state_for_setup = shared.clone();
 

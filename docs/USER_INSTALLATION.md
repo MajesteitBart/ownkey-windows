@@ -26,9 +26,16 @@ Rewriting can use OpenAI, Anthropic, Google Gemini, Mistral, or Ollama.
    provider. Enter each API key, refresh the model list, choose a model, and
    click **Save**.
 
-The installer is currently not code-signed. Windows SmartScreen may therefore
-show an **Unknown publisher** warning. Verify that the installer came from the
-official `MajesteitBart/ownkey-windows` GitHub release before continuing.
+The public `v0.3.0` installer published before the signing pipeline is unsigned,
+so Windows may show an **Unknown publisher** warning. Verify that an older
+installer came from the official `MajesteitBart/ownkey-windows` GitHub release
+before continuing.
+
+Future release-qualified installers must pass the repository's Authenticode
+verification script and identify one consistent publisher for the installer and
+packaged executables. A valid signature does not guarantee that SmartScreen
+will show no warning. SmartScreen reputation is separate from cryptographic
+signature and Windows certificate-chain validation.
 
 ## First use
 

@@ -75,7 +75,7 @@ Ownkey starts in the system tray. Right-click the tray icon, open **Settings**,
 choose providers for **Audio** and **Rewriting**, enter your API keys, refresh
 the model lists, and save.
 
-### Build the Windows installer
+### Build an unsigned development installer
 
 The repository includes an Inno Setup installer build. Install Python 3.11+,
 Node.js with pnpm, Rust with the MSVC toolchain, Visual Studio Build Tools, and
@@ -85,8 +85,32 @@ Node.js with pnpm, Rust with the MSVC toolchain, Visual Studio Build Tools, and
 build-installer.bat
 ```
 
-The versioned installer is written to `dist-installer\`. It packages the
-PyInstaller backend, Tauri overlay, shortcuts, uninstaller, and Ownkey branding.
+This contributor path does not require a certificate. It writes
+`dist-installer-dev\Ownkey-Setup-0.4.0-UNSIGNED-DEV.exe` and a warning file.
+Do not publish that output. It packages the PyInstaller backend, Tauri overlay,
+shortcuts, uninstaller, and Ownkey branding for local testing.
+
+### Build a signed public release
+
+Maintainers must use `build-release.ps1` for public artifacts. The command
+requires a suitable code-signing certificate in a Windows certificate store and
+selects it by SHA-1 thumbprint or exact subject. The selector is not a secret.
+
+```powershell
+.\build-release.ps1 `
+  -CertificateThumbprint $thumbprint `
+  -CertificateStoreLocation CurrentUser
+```
+
+The release builder signs and timestamps every packaged `.exe`, configures Inno
+Setup to sign the installer and generated uninstaller, and runs the independent
+verifier before creating `dist-release\`. A failed check leaves no new
+release-qualified output.
+
+See [Windows release signing](docs/WINDOWS_RELEASE_SIGNING.md) for certificate
+requirements, setup, verification, CI boundaries, and the difference between a
+valid signature, a trusted Windows certificate chain, and SmartScreen
+reputation.
 
 ## 04 · Use it
 
@@ -130,10 +154,22 @@ Audio and rewriting can use different providers and credentials.
 | Google Gemini | Yes | Yes | `/v1beta/models` |
 | Mistral | Yes | Yes | `/v1/models` |
 | Ollama | — | Yes, local or cloud | `/api/tags` |
+| OpenRouter | — | Yes, Chat Completions | `/api/v1/models` |
+| Custom (OpenAI-compatible) | Yes, if supported by the server | Yes, Chat Completions or Responses | Derived from the endpoint |
 
 Endpoints and model names remain editable for compatible aliases or custom
 deployments. Ollama presets include local `http://localhost:11434/api/chat` and
 cloud `https://ollama.com/api/chat` endpoints; Ownkey does not bundle a model.
+
+Choose **OpenRouter** in Rewriting for its Chat Completions preset. Enter your
+OpenRouter key and refresh the model list, or type a model ID. See the
+[OpenRouter API quickstart](https://openrouter.ai/docs/quickstart).
+
+For other servers, choose **Custom (OpenAI-compatible)** and enter the full
+request URL, such as `http://localhost:1234/v1/chat/completions` for rewriting
+or `/v1/audio/transcriptions` for audio. Use `/v1/responses` for servers with
+Responses support. Keep any proxy path prefix in the URL. API keys are optional
+for custom servers. If model discovery is unavailable, enter the model ID manually.
 
 ## Configuration
 
@@ -159,27 +195,34 @@ fields are migrated automatically.
 
 ## Development
 
-Build the portable backend bundle:
+Build the unsigned portable development backend bundle:
 
 ```bat
 build.bat
 ```
 
-Output: `dist\Ownkey\Ownkey.exe`. This is a folder-based PyInstaller bundle;
-keep the complete `dist\Ownkey` directory together.
+Output: `dist\Ownkey\Ownkey.exe`. This is an unsigned, folder-based PyInstaller
+development bundle; keep the complete `dist\Ownkey` directory together.
 
 Build the Tauri overlay:
 
 ```powershell
 cd overlay-ui
 pnpm install
-pnpm build
+pnpm build:binary
 ```
 
 Run the provider tests:
 
 ```powershell
 py -m unittest discover -s tests
+```
+
+Run the Windows signing-pipeline checks:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File .\tests\SigningPipeline.Tests.ps1
 ```
 
 The overlay receives local state updates over UDP `127.0.0.1:38485`. See
