@@ -334,7 +334,7 @@ def complete_rewrite(
         }
         if provider_id in {"openrouter", "custom"}:
             # Avoid reserving the model's entire output capacity for a short rewrite.
-            body["max_tokens"] = 4096
+            body["max_tokens"] = 1024
         response = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
         response.raise_for_status()
         return _extract_openai_text(response.json())

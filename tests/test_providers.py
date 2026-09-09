@@ -182,6 +182,18 @@ class ModelDiscoveryTests(unittest.TestCase):
 
 
 class ActivityAdapterTests(unittest.TestCase):
+    def test_small_context_server_accepts_rewrite_budget(self):
+        def server(_url, **kwargs):
+            # This local model has a 4,096-token context; its prompt uses 3,072.
+            if 3072 + kwargs["json"]["max_tokens"] > 4096:
+                raise providers.requests.HTTPError("Prompt plus output exceeds model context")
+            return FakeResponse({"choices": [{"message": {"content": "edited"}}]})
+
+        with patch.object(providers.requests, "post", side_effect=server):
+            self.assertEqual(providers.complete_rewrite(
+                "custom", "", "http://localhost:1234/v1/chat/completions",
+                "small-context-model", "edit", "source text"), "edited")
+
     def test_output_limit_never_returns_a_partial_rewrite(self):
         payload = {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}
         with patch.object(providers.requests, "post", return_value=FakeResponse(payload)):
@@ -203,7 +215,7 @@ class ActivityAdapterTests(unittest.TestCase):
                 self.assertEqual(result, "edited")
                 self.assertEqual(request.call_args.args[0], endpoint)
                 self.assertEqual(request.call_args.kwargs["json"]["model"], "vendor/model")
-                self.assertEqual(request.call_args.kwargs["json"]["max_tokens"], 4096)
+                self.assertEqual(request.call_args.kwargs["json"]["max_tokens"], 1024)
                 self.assertEqual(request.call_args.kwargs["headers"].get("Authorization"),
                                  f"Bearer {key}" if key else None)
                 self.assertEqual(providers.models_endpoint(provider, endpoint),

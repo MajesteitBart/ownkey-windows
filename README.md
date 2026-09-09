@@ -86,7 +86,7 @@ build-installer.bat
 ```
 
 This contributor path does not require a certificate. It writes
-`dist-installer-dev\Ownkey-Setup-0.3.0-UNSIGNED-DEV.exe` and a warning file.
+`dist-installer-dev\Ownkey-Setup-0.4.0-UNSIGNED-DEV.exe` and a warning file.
 Do not publish that output. It packages the PyInstaller backend, Tauri overlay,
 shortcuts, uninstaller, and Ownkey branding for local testing.
 
