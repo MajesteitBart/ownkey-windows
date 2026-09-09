@@ -154,10 +154,22 @@ Audio and rewriting can use different providers and credentials.
 | Google Gemini | Yes | Yes | `/v1beta/models` |
 | Mistral | Yes | Yes | `/v1/models` |
 | Ollama | — | Yes, local or cloud | `/api/tags` |
+| OpenRouter | — | Yes, Chat Completions | `/api/v1/models` |
+| Custom (OpenAI-compatible) | Yes, if supported by the server | Yes, Chat Completions or Responses | Derived from the endpoint |
 
 Endpoints and model names remain editable for compatible aliases or custom
 deployments. Ollama presets include local `http://localhost:11434/api/chat` and
 cloud `https://ollama.com/api/chat` endpoints; Ownkey does not bundle a model.
+
+Choose **OpenRouter** in Rewriting for its Chat Completions preset. Enter your
+OpenRouter key and refresh the model list, or type a model ID. See the
+[OpenRouter API quickstart](https://openrouter.ai/docs/quickstart).
+
+For other servers, choose **Custom (OpenAI-compatible)** and enter the full
+request URL, such as `http://localhost:1234/v1/chat/completions` for rewriting
+or `/v1/audio/transcriptions` for audio. Use `/v1/responses` for servers with
+Responses support. Keep any proxy path prefix in the URL. API keys are optional
+for custom servers. If model discovery is unavailable, enter the model ID manually.
 
 ## Configuration
 
