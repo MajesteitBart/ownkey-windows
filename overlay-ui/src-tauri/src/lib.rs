@@ -43,6 +43,30 @@ fn watch_parent() {
     });
 }
 
+// Track the parent's process start time as well as its PID so a reused PID
+// cannot keep an orphaned overlay alive.
+#[cfg(target_os = "linux")]
+fn watch_parent() {
+    let Ok(value) = std::env::var("OWNKEY_PARENT_PID") else {
+        return;
+    };
+    let pid = value.parse::<u32>().expect("invalid OWNKEY_PARENT_PID");
+    let identity = move || -> Option<String> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // comm can contain spaces and parentheses; field 22 is starttime.
+        stat.rsplit_once(')')?.1.split_whitespace().nth(19).map(str::to_owned)
+    };
+    let Some(start_time) = identity() else {
+        std::process::exit(0);
+    };
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(250));
+        if identity().as_ref() != Some(&start_time) {
+            std::process::exit(0);
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct OverlayState {
@@ -303,7 +327,13 @@ fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(windows)]
+    // GNOME Wayland does not expose absolute positioning/always-on-top for
+    // ordinary clients. Use XWayland for this non-interactive overlay only.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+    #[cfg(any(windows, target_os = "linux"))]
     watch_parent();
     let shared = Arc::new(SharedOverlayState::default());
     let state_for_setup = shared.clone();
@@ -321,6 +351,13 @@ pub fn run() {
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                // Tao's click-through implementation requires a native GDK
+                // window even though we start hidden (before the first show).
+                #[cfg(target_os = "linux")]
+                {
+                    use gtk::prelude::WidgetExt;
+                    window.gtk_window()?.realize();
+                }
                 let _ = window.set_ignore_cursor_events(true);
                 let _ = window.set_focusable(false);
                 let _ = position_overlay_window(&window);
