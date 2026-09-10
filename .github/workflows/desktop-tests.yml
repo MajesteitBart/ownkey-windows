@@ -21,7 +21,7 @@ jobs:
       - name: Install desktop test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-venv python3-dev python3-tk python3-gi libportaudio2 gir1.2-ayatanaappindicator3-0.1 xvfb dbus-x11
+          sudo apt-get install -y python3-venv python3-dev python3-tk python3-gi libportaudio2 gir1.2-ayatanaappindicator3-0.1 gir1.2-ibus-1.0 libxkbcommon0 xkb-data xvfb dbus-x11
           python3 -m venv --system-site-packages .venv
           .venv/bin/python -m pip install -r requirements.txt
       - name: Run Python tests under a virtual desktop

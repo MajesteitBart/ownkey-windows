@@ -105,7 +105,11 @@ virtual keyboard for copy/paste. The setup script installs a udev rule granting
 the active local desktop user access to keyboards and `/dev/uinput`. This allows
 processes running as that user to observe keys and inject input; Ownkey itself
 runs without root. The rule lives at `/etc/udev/rules.d/70-ownkey-input.rules`.
-Wayland always uses clipboard paste so Unicode text works across keyboard layouts.
+Wayland uses clipboard paste to preserve Unicode text. Copy/paste shortcuts are
+resolved from GNOME's current IBus input source and XKB rules, including Dvorak
+and remapped Control keys. Sources that do not expose a concrete XKB layout or
+Latin C/V shortcuts are not yet supported for insertion; Ownkey reports an error
+instead of guessing key positions. Switch to a Latin XKB source in that case.
 The clipboard is replaced when dictating or copying a selection for rewriting.
 X11 uses pynput and xclip without these device permissions.
 

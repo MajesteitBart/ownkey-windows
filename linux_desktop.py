@@ -67,8 +67,7 @@ class KeyboardOutput:
     def prepare(self):
         if is_wayland():
             from evdev import UInput, ecodes
-            self._device = UInput({ecodes.EV_KEY: [ecodes.KEY_LEFTCTRL,
-                                                   ecodes.KEY_C, ecodes.KEY_V]},
+            self._device = UInput({ecodes.EV_KEY: list(range(1, 256))},
                                   name="Ownkey text output")
             # Allow the compositor to discover the virtual keyboard.
             time.sleep(.3)
@@ -82,14 +81,15 @@ class KeyboardOutput:
         with self._lock:
             if is_wayland():
                 from evdev import ecodes as e
-                key = {"ctrl+c": e.KEY_C, "ctrl+v": e.KEY_V}[shortcut]
+                from linux_keyboard_layout import clipboard_shortcut
+                control, key = clipboard_shortcut({"ctrl+c": "c", "ctrl+v": "v"}[shortcut])
                 try:
-                    for code in (e.KEY_LEFTCTRL, key):
+                    for code in (control, key):
                         self._device.write(e.EV_KEY, code, 1)
                         self._device.syn()
                     time.sleep(.02)
                 finally:
-                    for code in (key, e.KEY_LEFTCTRL):
+                    for code in (key, control):
                         self._device.write(e.EV_KEY, code, 0)
                         self._device.syn()
             else:

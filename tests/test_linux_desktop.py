@@ -52,7 +52,8 @@ class LinuxDesktopTests(unittest.TestCase):
         output._device = Mock()
         output._device.write.side_effect = [None, OSError('test'), None, None]
         with patch.dict('sys.modules', {'evdev': types.SimpleNamespace(ecodes=ecodes)}), \
-             patch.object(desktop, 'is_wayland', return_value=True):
+             patch.object(desktop, 'is_wayland', return_value=True), \
+             patch('linux_keyboard_layout.clipboard_shortcut', return_value=(29, 47)):
             with self.assertRaises(OSError):
                 output.send('ctrl+v')
         self.assertEqual(output._device.write.call_args_list[-2].args, (1, 47, 0))
