@@ -61,10 +61,14 @@ try:
 except ImportError:
     sys.exit("Missing: pynput  →  pip install pynput")
 
-try:
-    import keyboard as kb
-except ImportError:
-    sys.exit("Missing: keyboard  →  pip install keyboard")
+if sys.platform.startswith("linux"):
+    import linux_desktop
+    kb = linux_desktop.KeyboardOutput()
+else:
+    try:
+        import keyboard as kb
+    except ImportError:
+        sys.exit("Missing: keyboard  →  pip install keyboard")
 
 try:
     import pyperclip
@@ -93,11 +97,16 @@ try:
 except ImportError:
     winsound = None
 
+if sys.platform.startswith("linux") and linux_desktop.is_wayland():
+    pyperclip = linux_desktop.Clipboard
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 APP_NAME = "Ownkey"
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
+if sys.platform.startswith("linux"):
+    CONFIG_DIR = str(linux_desktop.config_dir())
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
@@ -202,7 +211,7 @@ TAURI_OVERLAY_PROCESS_NAME = "ownkey-overlay.exe"
 TAURI_OVERLAY_BINARY_NAMES = (
     "ownkey-overlay.exe",
     "Ownkey Overlay.exe",
-)
+) if os.name == "nt" else ("ownkey-overlay",)
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -410,7 +419,13 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     """Persist config to disk."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+    if os.name == "posix":
+        fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    else:
+        fh = open(CONFIG_FILE, "w", encoding="utf-8")
+    with fh:
         json.dump(cfg, fh, indent=2)
 
 
@@ -617,9 +632,14 @@ class StatusOverlay:
         timer.start()
         self._bridge_hide_timer = timer
 
-    def start(self) -> None:
-        """Start the UI thread if it is not already running."""
+    def start(self, parent=None) -> None:
+        """Use the main Tk loop when a parent is supplied."""
         if not self._native_enabled:
+            return
+        if self._ready.is_set():
+            return
+        if parent is not None:
+            self._run(parent)
             return
         if self._thread and self._thread.is_alive():
             return
@@ -707,8 +727,8 @@ class StatusOverlay:
             **kwargs,
         )
 
-    def _run(self) -> None:
-        root = tk.Tk()
+    def _run(self, parent=None) -> None:
+        root = tk.Toplevel(parent) if parent is not None else tk.Tk()
         root.withdraw()
         root.overrideredirect(True)
         try:
@@ -1087,7 +1107,8 @@ class StatusOverlay:
         self._ready.set()
         root.after(33, _animate)
         root.after(60, process_queue)
-        root.mainloop()
+        if parent is None:
+            root.mainloop()
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1126,9 @@ def _get_winreg():
 
 def set_startup(enable: bool) -> None:
     """Add/remove Ownkey from Windows startup registry key."""
+    if sys.platform.startswith("linux"):
+        linux_desktop.set_startup(enable)
+        return
     winreg = _get_winreg()
     if winreg is None:
         return
@@ -1129,6 +1153,8 @@ def set_startup(enable: bool) -> None:
 
 def is_startup_enabled() -> bool:
     """Return True if Ownkey is in the Windows startup registry."""
+    if sys.platform.startswith("linux"):
+        return linux_desktop.startup_file().is_file()
     winreg = _get_winreg()
     if winreg is None:
         return False
@@ -1543,6 +1569,9 @@ class SettingsWindow:
                                   bg=self.BG, fg=self.FG,
                                   selectcolor=self.ENTRY_BG,
                                   activebackground=self.BG, activeforeground=self.FG)
+        if sys.platform.startswith("linux") and linux_desktop.is_wayland():
+            v_paste.set(True)
+            cb_paste.configure(text="Clipboard paste (required on Wayland)", state="disabled")
         cb_paste.grid(row=general_row, column=1, sticky="w", **pad)
         general_row += 1
 
@@ -1561,7 +1590,7 @@ class SettingsWindow:
         general_row += 1
 
         v_startup = tk.BooleanVar(win, value=is_startup_enabled())
-        cb_startup = tk.Checkbutton(general_tab, text="Start with Windows",
+        cb_startup = tk.Checkbutton(general_tab, text="Start at login",
                                     variable=v_startup,
                                     bg=self.BG, fg=self.FG,
                                     selectcolor=self.ENTRY_BG,
@@ -1862,7 +1891,7 @@ class OwnkeyApp:
     def __init__(self):
         self.cfg = load_config()
         # Auto-register for Windows startup on first run (user can disable in Settings)
-        if not is_startup_enabled():
+        if os.name == "nt" and not is_startup_enabled():
             set_startup(True)
         self._state = "idle"
         self._recording = False
@@ -1965,6 +1994,9 @@ class OwnkeyApp:
 
     def _resolve_pynput_keys(self, hotkey_name: str) -> tuple:
         """Return one or more pynput Key objects for the given hotkey name."""
+        if sys.platform.startswith("linux") and linux_desktop.is_wayland():
+            code = linux_desktop.HOTKEY_CODES.get(str(hotkey_name or "").lower())
+            return (code,) if code is not None else ()
         attrs = PYNPUT_KEY_MAP.get(str(hotkey_name or "").lower(), ())
         if isinstance(attrs, str):
             attrs = (attrs,)
@@ -2009,7 +2041,10 @@ class OwnkeyApp:
                 self._listener.stop()
             except Exception:
                 pass
-        self._listener = pynput_keyboard.Listener(
+        listener_class = pynput_keyboard.Listener
+        if sys.platform.startswith("linux") and linux_desktop.is_wayland():
+            listener_class = linux_desktop.HotkeyListener
+        self._listener = listener_class(
             on_press=self._on_press,
             on_release=self._on_release,
         )
@@ -2317,14 +2352,17 @@ class OwnkeyApp:
 
     def _play_ready_chime(self) -> None:
         """Play a short chime when the microphone stream is ready."""
-        if os.name != "nt" or winsound is None:
-            return
         if not bool(self.cfg.get("ready_chime", DEFAULT_CONFIG["ready_chime"])):
             return
         now = time.monotonic()
         if now - self._last_ready_chime_at < READY_CHIME_COOLDOWN_SECONDS:
             return
         self._last_ready_chime_at = now
+        if sys.platform.startswith("linux"):
+            self._ui_commands.put("bell")
+            return
+        if winsound is None:
+            return
         try:
             winsound.PlaySound(
                 READY_CHIME_ALIAS,
@@ -2430,6 +2468,8 @@ class OwnkeyApp:
                 if command == "quit":
                     self._ui_root.quit()
                     return
+                if command == "bell":
+                    self._ui_root.bell()
                 if command == "settings":
                     self._settings.open()
         except queue.Empty:
@@ -2444,6 +2484,8 @@ class OwnkeyApp:
             except Exception:
                 pass
         self._stop_audio_stream()
+        if sys.platform.startswith("linux"):
+            kb.close()
         self._connection_stop.set()
         self._overlay.stop()
         self._stop_tauri_overlay()
@@ -2465,7 +2507,7 @@ class OwnkeyApp:
         if self._tauri_overlay_exe:
             stop_orphaned_tauri_overlays(self._tauri_overlay_exe)
         self._start_tauri_overlay()
-        self._overlay.start()
+        self._overlay.start(self._ui_root if sys.platform.startswith("linux") else None)
         self._overlay.update(
             connection="checking",
             listening="ready",
@@ -2486,7 +2528,13 @@ class OwnkeyApp:
         ):
             threading.Thread(target=self._first_run_prompt, daemon=True).start()
 
-        self.start_listener()
+        try:
+            if sys.platform.startswith("linux"):
+                kb.prepare()
+            self.start_listener()
+        except (OSError, RuntimeError) as exc:
+            self._ui_root.after(100, lambda error=str(exc): messagebox.showerror(
+                APP_NAME, "Keyboard setup is incomplete.\n\n" + error, parent=self._ui_root))
 
         icon_image = make_icon("idle")
         menu = Menu(
@@ -2501,6 +2549,8 @@ class OwnkeyApp:
             menu=menu,
         )
         self._tray.run_detached()
+        if "--settings" in sys.argv or (sys.platform.startswith("linux") and not get_effective_api_key(self.cfg)):
+            self._open_settings()
         self._ui_root.after(50, self._poll_ui_commands)
         try:
             self._ui_root.mainloop()
@@ -2520,6 +2570,18 @@ class OwnkeyApp:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app = OwnkeyApp()
-    app.run()
+    instance = linux_desktop.SingleInstance() if sys.platform.startswith("linux") else None
+    if instance and not instance.acquire():
+        instance.activate()
+        sys.exit(0)
+    try:
+        app = OwnkeyApp()
+        if instance:
+            import signal
+            instance.listen(app._open_settings)
+            signal.signal(signal.SIGTERM, lambda *_: app._quit())
+        app.run()
+    finally:
+        if instance:
+            instance.close()
 

@@ -100,3 +100,22 @@ The Python app will still emit UDP patches to `127.0.0.1:38485`.
 
 - `get_overlay_state` - returns the current state
 - `set_overlay_state` - sets and broadcasts state (used by dev toolbar)
+
+## Linux
+
+From the repository root, `scripts/setup-linux.sh` installs Ubuntu build
+prerequisites; `scripts/build-overlay-linux.sh` builds the release binary at
+`overlay-ui/src-tauri/target/release/ownkey-overlay`. Node.js and pnpm are required.
+`run-linux.sh` starts the backend and this overlay together.
+
+On GNOME Wayland, the overlay uses XWayland for positioning and always-on-top
+behavior. It starts hidden and does not take focus. The backend still uses
+Wayland-compatible keyboard/clipboard integration. The overlay exits if its
+owning backend exits, including a crash.
+
+Run the real process lifecycle test with:
+
+```bash
+OWNKEY_TEST_OVERLAY_EXE="$PWD/overlay-ui/src-tauri/target/release/ownkey-overlay" \
+  PYSTRAY_BACKEND=appindicator .venv/bin/python -m unittest discover -s tests -p test_overlay_integration.py
+```
