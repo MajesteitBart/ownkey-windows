@@ -1,5 +1,5 @@
 #define MyAppName "Ownkey"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.4.0"
 #define MyAppPublisher "Ownkey"
 #define MyAppExeName "backend\\Ownkey.exe"
 
@@ -40,7 +40,7 @@ WizardSmallImageFile=assets\wizard-small-100.bmp,assets\wizard-small-150.bmp,ass
 UninstallDisplayIcon={app}\ownkey.ico
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
-VersionInfoVersion=0.3.0.0
+VersionInfoVersion=0.4.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Ownkey for Windows installer
 VersionInfoCopyright=Copyright (C) 2026 Ownkey

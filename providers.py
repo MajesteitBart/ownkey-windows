@@ -49,6 +49,18 @@ PROVIDER_PRESETS = {
         ),
         "models_endpoint": "http://localhost:11434/api/tags",
     },
+    "openrouter": {
+        "label": "OpenRouter",
+        "audio_endpoints": (),
+        "rewrite_endpoints": ("https://openrouter.ai/api/v1/chat/completions",),
+        "models_endpoint": "https://openrouter.ai/api/v1/models",
+    },
+    "custom": {
+        "label": "Custom (OpenAI-compatible)",
+        "audio_endpoints": ("http://localhost:1234/v1/audio/transcriptions",),
+        "rewrite_endpoints": ("http://localhost:1234/v1/chat/completions",),
+        "models_endpoint": "http://localhost:1234/v1/models",
+    },
 }
 
 AUDIO_PROVIDER_IDS = tuple(
@@ -64,6 +76,27 @@ PROVIDER_LABEL_TO_ID = {
 
 class ProviderConfigurationError(ValueError):
     """Raised when an activity is configured for an unsupported provider."""
+
+
+def describe_api_error(error: requests.HTTPError) -> str:
+    """Keep the provider's explanation even though HTTP error responses are falsey."""
+    response = error.response
+    if response is None:
+        return "API request failed. No response was received."
+    message = ""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = payload.get("error", payload)
+            if isinstance(detail, dict):
+                message = str(detail.get("message") or "")
+            elif isinstance(detail, str):
+                message = detail
+    except ValueError:
+        pass
+    if not message:
+        message = response.text.strip() or response.reason or "Request rejected"
+    return f"API error {response.status_code}: {' '.join(message.split())[:220]}"
 
 
 def normalize_provider(value: object, fallback: str = "mistral") -> str:
@@ -99,15 +132,20 @@ def default_endpoint(provider: str, activity: str) -> str:
 
 def provider_from_endpoint(endpoint: object, fallback: str = "mistral") -> str:
     """Best-effort provider inference used when migrating the old shared config."""
-    host = (urlparse(str(endpoint or "")).hostname or "").lower()
+    parsed = urlparse(str(endpoint or ""))
+    host = (parsed.hostname or "").lower()
     if "anthropic" in host:
         return "anthropic"
     if "generativelanguage.googleapis" in host:
         return "google"
     if "mistral" in host:
         return "mistral"
+    if host == "openrouter.ai":
+        return "openrouter"
     if "openai" in host:
         return "openai"
+    if host and parsed.path.rstrip("/").endswith(("/chat/completions", "/responses", "/audio/transcriptions")):
+        return "custom"
     if host in {"localhost", "127.0.0.1", "::1", "ollama.com"} or "ollama" in host:
         return "ollama"
     return fallback
@@ -115,6 +153,8 @@ def provider_from_endpoint(endpoint: object, fallback: str = "mistral") -> str:
 
 def provider_requires_key(provider: str, endpoint: str = "") -> bool:
     """Return whether Ownkey should block a request when no API key is set."""
+    if normalize_provider(provider) == "custom":
+        return False
     if normalize_provider(provider) != "ollama":
         return True
     return (urlparse(str(endpoint or "")).hostname or "").lower() == "ollama.com"
@@ -144,6 +184,11 @@ def _model_url(endpoint: str, model: str) -> str:
 
 
 def _extract_openai_text(result: dict) -> str:
+    if any(isinstance(choice, dict) and choice.get("finish_reason") == "length"
+           for choice in result.get("choices", [])):
+        raise ProviderConfigurationError(
+            "Rewrite reached the output limit. Try rewriting a shorter selection."
+        )
     try:
         content = result["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
@@ -160,6 +205,11 @@ def _extract_openai_text(result: dict) -> str:
 
 
 def _extract_openai_response_text(result: dict) -> str:
+    status = result.get("status")
+    if status not in {None, "completed"}:
+        raise ProviderConfigurationError(
+            f"Rewrite response is {status}. No partial text was inserted; try a shorter selection."
+        )
     return "".join(
         str(content.get("text", ""))
         for output in result.get("output", [])
@@ -199,7 +249,7 @@ def transcribe_audio(
         raise ProviderConfigurationError("Select an audio model in Settings.")
 
     headers = _auth_headers(provider_id, api_key)
-    if provider_id in {"openai", "mistral"}:
+    if provider_id in {"openai", "mistral", "custom"}:
         data = {"model": model}
         if language and language != "auto":
             data["language"] = language
@@ -265,7 +315,7 @@ def complete_rewrite(
     headers = _auth_headers(provider_id, api_key)
     headers["Content-Type"] = "application/json"
 
-    if provider_id == "openai" and urlparse(endpoint).path.rstrip("/").endswith(
+    if provider_id in {"openai", "custom"} and urlparse(endpoint).path.rstrip("/").endswith(
         "/responses"
     ):
         body = {
@@ -278,7 +328,7 @@ def complete_rewrite(
         response.raise_for_status()
         return _extract_openai_response_text(response.json())
 
-    if provider_id in {"openai", "mistral"}:
+    if provider_id in {"openai", "mistral", "openrouter", "custom"}:
         body = {
             "model": model,
             "temperature": 0.2,
@@ -287,6 +337,9 @@ def complete_rewrite(
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if provider_id in {"openrouter", "custom"}:
+            # Avoid reserving the model's entire output capacity for a short rewrite.
+            body["max_tokens"] = 1024
         response = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
         response.raise_for_status()
         return _extract_openai_text(response.json())
@@ -357,9 +410,9 @@ def models_endpoint(provider: str, activity_endpoint: str) -> str:
     endpoint = str(activity_endpoint or "").strip()
     if not endpoint:
         return str(PROVIDER_PRESETS[provider_id]["models_endpoint"])
-    if provider_id in {"openai", "mistral"}:
+    if provider_id in {"openai", "mistral", "openrouter", "custom"}:
         suffixes = ("/audio/transcriptions", "/chat/completions")
-        if provider_id == "openai":
+        if provider_id in {"openai", "custom"}:
             suffixes += ("/responses",)
         return _replace_endpoint_path(endpoint, suffixes, "/models")
     if provider_id == "anthropic":
@@ -408,7 +461,7 @@ def list_available_models(
     response.raise_for_status()
     result = response.json()
 
-    if provider_id in {"openai", "mistral", "anthropic"}:
+    if provider_id in {"openai", "mistral", "anthropic", "openrouter", "custom"}:
         items = result if isinstance(result, list) else result.get("data", [])
         models = [item.get("id") for item in items if isinstance(item, dict)]
     elif provider_id == "google":

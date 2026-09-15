@@ -181,7 +181,7 @@ checked directly:
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File .\scripts\Verify-WindowsRelease.ps1 `
   -ArtifactsDirectory .\dist-release `
-  -ExpectedVersion 0.3.0 `
+  -ExpectedVersion 0.4.0 `
   -ExpectedCertificateThumbprint $thumbprint
 
 if ($LASTEXITCODE -ne 0) {

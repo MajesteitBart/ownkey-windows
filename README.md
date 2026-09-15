@@ -75,6 +75,61 @@ Ownkey starts in the system tray. Right-click the tray icon, open **Settings**,
 choose providers for **Audio** and **Rewriting**, enter your API keys, refresh
 the model lists, and save.
 
+### Run on Linux (experimental)
+
+Tested on **Ubuntu 26.04 with GNOME Wayland and XWayland**. This is initial
+source-based support for microphone capture, global hotkeys, clipboard insertion,
+the Tauri overlay, tray settings, and optional startup at login. The X11 backend
+is implemented but has not been validated in a native X11 session. Other
+distributions and desktop environments are not yet validated.
+
+Install Node.js **22.12+** with pnpm 10 first (`corepack enable pnpm` if Corepack
+is available). The setup script uses Ubuntu/Debian packages; older distributions
+may need a newer Rust toolchain than their package repositories provide.
+Then install from this checkout:
+
+```bash
+sudo ./scripts/setup-linux.sh
+./scripts/install-linux.sh
+./run-linux.sh --settings
+```
+
+Launch **Ownkey** from the application menu afterward. Configure your provider
+and API key in Settings, then hold **Right Alt** to dictate or **Right Ctrl** to
+rewrite a selection. Linux settings are stored in
+`${XDG_CONFIG_HOME:-~/.config}/ownkey/config.json` with owner-only permissions.
+Enable **Start at login** in Settings if desired; it is off by default on Linux.
+
+On Wayland, Ownkey reads physical keyboard events through evdev and uses a
+virtual keyboard for copy/paste. The setup script installs a udev rule granting
+the active local desktop user access to keyboards and `/dev/uinput`. This allows
+processes running as that user to observe keys and inject input; Ownkey itself
+runs without root. The rule lives at `/etc/udev/rules.d/70-ownkey-input.rules`.
+Wayland uses clipboard paste to preserve Unicode text. Copy/paste shortcuts are
+resolved from GNOME's current IBus input source and XKB rules, including Dvorak
+and remapped Control keys. Sources that do not expose a concrete XKB layout or
+Latin C/V shortcuts are not yet supported for insertion; Ownkey reports an error
+instead of guessing key positions. Switch to a Latin XKB source in that case.
+The clipboard is replaced when dictating or copying a selection for rewriting.
+X11 uses pynput and xclip without these device permissions.
+
+The installer builds the Tauri brand pill used on Windows, including the orange
+waveform, status text, and transparent background. Only this display window uses
+XWayland so GNOME can position it above the dock without taking keyboard focus;
+hotkeys and text output continue to work in native Wayland applications.
+The launcher requires the Tauri binary and will not silently use the legacy Tk
+visual. Rebuild it with `./scripts/build-overlay-linux.sh` after overlay changes.
+Repeated launches open Settings in the existing process, preventing duplicate
+recordings and text insertion.
+A desktop with AppIndicator support is needed for the tray menu (provided by
+Ubuntu's desktop). **Settings** opens automatically on first launch.
+
+Validation so far covers microphone capture, Wayland hotkey press/release,
+Unicode paste into a native Wayland app, overlay transparency/focus/lifecycle,
+and repeated launches. Clean-install/reboot testing, startup after login, and
+end-to-end dictation/rewrite checks across multiple applications remain release
+validation tasks. There is no prebuilt Linux installer yet.
+
 ### Build an unsigned development installer
 
 The repository includes an Inno Setup installer build. Install Python 3.11+,
@@ -86,7 +141,7 @@ build-installer.bat
 ```
 
 This contributor path does not require a certificate. It writes
-`dist-installer-dev\Ownkey-Setup-0.3.0-UNSIGNED-DEV.exe` and a warning file.
+`dist-installer-dev\Ownkey-Setup-0.4.0-UNSIGNED-DEV.exe` and a warning file.
 Do not publish that output. It packages the PyInstaller backend, Tauri overlay,
 shortcuts, uninstaller, and Ownkey branding for local testing.
 
@@ -154,10 +209,22 @@ Audio and rewriting can use different providers and credentials.
 | Google Gemini | Yes | Yes | `/v1beta/models` |
 | Mistral | Yes | Yes | `/v1/models` |
 | Ollama | — | Yes, local or cloud | `/api/tags` |
+| OpenRouter | — | Yes, Chat Completions | `/api/v1/models` |
+| Custom (OpenAI-compatible) | Yes, if supported by the server | Yes, Chat Completions or Responses | Derived from the endpoint |
 
 Endpoints and model names remain editable for compatible aliases or custom
 deployments. Ollama presets include local `http://localhost:11434/api/chat` and
 cloud `https://ollama.com/api/chat` endpoints; Ownkey does not bundle a model.
+
+Choose **OpenRouter** in Rewriting for its Chat Completions preset. Enter your
+OpenRouter key and refresh the model list, or type a model ID. See the
+[OpenRouter API quickstart](https://openrouter.ai/docs/quickstart).
+
+For other servers, choose **Custom (OpenAI-compatible)** and enter the full
+request URL, such as `http://localhost:1234/v1/chat/completions` for rewriting
+or `/v1/audio/transcriptions` for audio. Use `/v1/responses` for servers with
+Responses support. Keep any proxy path prefix in the URL. API keys are optional
+for custom servers. If model discovery is unavailable, enter the model ID manually.
 
 ## Configuration
 

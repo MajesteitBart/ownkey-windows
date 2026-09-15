@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Ownkey Overlay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.ownkey.overlay",
   "build": {
     "frontendDist": "../dist",
@@ -20,6 +20,9 @@
         "minHeight": 132,
         "maxWidth": 320,
         "maxHeight": 132,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,

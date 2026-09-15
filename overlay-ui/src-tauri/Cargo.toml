@@ -1,6 +1,6 @@
 [package]
 name = "ownkey-overlay"
-version = "0.3.0"
+version = "0.4.0"
 description = "Ownkey overlay desktop shell"
 authors = ["Ownkey"]
 license = "MIT"
@@ -24,3 +24,5 @@ log = "0.4"
 tauri = { version = "2.10.0", features = [] }
 tauri-plugin-log = "2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }

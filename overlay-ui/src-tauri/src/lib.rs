@@ -15,6 +15,58 @@ const TASKBAR_MARGIN_PX: i32 = 40;
 // Keep the OS window up long enough for the webview's exit fade to play.
 const EXIT_FADE_MS: u64 = 280;
 
+// A process handle stays tied to this parent even if Windows later reuses its PID.
+// Wait on a worker thread so the window's event loop remains responsive.
+#[cfg(windows)]
+fn watch_parent() {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    let Ok(value) = std::env::var("OWNKEY_PARENT_PID") else {
+        return; // Standalone overlay development has no owning backend.
+    };
+    let pid = value.parse::<u32>().expect("invalid OWNKEY_PARENT_PID");
+    thread::spawn(move || unsafe {
+        let parent = OpenProcess(0x0010_0000, 0, pid); // SYNCHRONIZE
+        if parent.is_null() {
+            std::process::exit(0); // The backend may have exited during startup.
+        }
+        let result = WaitForSingleObject(parent, u32::MAX);
+        CloseHandle(parent);
+        std::process::exit(if result == 0 { 0 } else { 1 });
+    });
+}
+
+// Track the parent's process start time as well as its PID so a reused PID
+// cannot keep an orphaned overlay alive.
+#[cfg(target_os = "linux")]
+fn watch_parent() {
+    let Ok(value) = std::env::var("OWNKEY_PARENT_PID") else {
+        return;
+    };
+    let pid = value.parse::<u32>().expect("invalid OWNKEY_PARENT_PID");
+    let identity = move || -> Option<String> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // comm can contain spaces and parentheses; field 22 is starttime.
+        stat.rsplit_once(')')?.1.split_whitespace().nth(19).map(str::to_owned)
+    };
+    let Some(start_time) = identity() else {
+        std::process::exit(0);
+    };
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(250));
+        if identity().as_ref() != Some(&start_time) {
+            std::process::exit(0);
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct OverlayState {
@@ -275,6 +327,14 @@ fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // GNOME Wayland does not expose absolute positioning/always-on-top for
+    // ordinary clients. Use XWayland for this non-interactive overlay only.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    watch_parent();
     let shared = Arc::new(SharedOverlayState::default());
     let state_for_setup = shared.clone();
 
@@ -291,6 +351,13 @@ pub fn run() {
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                // Tao's click-through implementation requires a native GDK
+                // window even though we start hidden (before the first show).
+                #[cfg(target_os = "linux")]
+                {
+                    use gtk::prelude::WidgetExt;
+                    window.gtk_window()?.realize();
+                }
                 let _ = window.set_ignore_cursor_events(true);
                 let _ = window.set_focusable(false);
                 let _ = position_overlay_window(&window);
