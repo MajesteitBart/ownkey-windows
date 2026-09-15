@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import ownkey
 
 
-@unittest.skipUnless(os.name == "nt", "Windows desktop lifecycle")
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Requires a desktop session")
 class SettingsLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.app = ownkey.OwnkeyApp.__new__(ownkey.OwnkeyApp)
