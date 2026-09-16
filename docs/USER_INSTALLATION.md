@@ -29,7 +29,9 @@ OpenRouter, a custom OpenAI-compatible server, or local Ollama.
    cloud provider, enter its API key, click **Refresh**, and choose a
    transcription model.
 7. Optionally set up a **Rewriting** provider: enter the key, refresh the model
-   list, and choose a model.
+   list, and choose a model. For **Custom (OpenAI-compatible)**, first enter
+   the server's full request URL as the endpoint; a key is needed only when
+   that server requires one. Ollama defaults to the local server.
 8. On the **Dictionary** page add your name and the terms you use, so they are
    typed the way you spell them.
 9. Click **Save**. Settings and dictionary entries are only stored when you
