@@ -161,13 +161,14 @@ def speaker_for(start: float, end: float, segments: list[dict], fallback: str | 
 
 
 def assign_speakers(passages: list[dict], segments: list[dict], *, source: str,
-                    fallback_speaker: str) -> tuple[list[dict], list[dict]]:
+                    fallback_speaker: str, first_number: int = 1) -> tuple[list[dict], list[dict]]:
     """Label one source's passages, splitting at speaker changes.
 
     Returns ``(new_passages, speakers)`` where speakers are
     ``{"id": "<source>-1", "name": "Speaker 1", "label": "SPEAKER_00"}`` in
-    order of first appearance. Passages nobody claims keep the fallback
-    speaker (the source label).
+    order of first appearance. ``first_number`` continues the numbering when
+    several tracks are labelled, so a meeting never shows two Speaker 1s.
+    Passages nobody claims keep the fallback speaker (the source label).
     """
     labels: dict[str, str] = {}
 
@@ -209,5 +210,5 @@ def assign_speakers(passages: list[dict], segments: list[dict], *, source: str,
                 "tokens": [(t[0], round(t[1], 2), round(t[2], 2)) for t in run["tokens"]],
             })
     speakers = [{"id": sid, "name": f"Speaker {index}", "label": label}
-                for index, (label, sid) in enumerate(labels.items(), start=1)]
+                for index, (label, sid) in enumerate(labels.items(), start=first_number)]
     return output, speakers

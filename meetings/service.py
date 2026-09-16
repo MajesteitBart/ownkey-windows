@@ -204,7 +204,7 @@ class MeetingService:
         return sources
 
     def start_meeting(self, title: str = "", *, mic: bool = True, system: bool = True, mic_device=None,
-                      system_device=None, retention: str | None = None) -> dict:
+                      system_device=None, retention: str | None = None, mic_shared: bool = False) -> dict:
         if not mic and not system:
             raise MeetingError("Choose at least one source.")
         with self._lock:
@@ -216,6 +216,9 @@ class MeetingService:
             if not sources:
                 raise MeetingError("No capture source is available.")
             described = {s.label: {"device": wants.get(f"{s.label}_device")} for s in sources}
+            if MIC in described:
+                # Several people around one microphone: label that track too.
+                described[MIC]["shared"] = bool(mic_shared)
             meeting = self.store.create_meeting(title, described, retention, engine="orukeet")
             for source in sources:
                 self.store.ensure_speaker(meeting["id"], source.label, source.label, SOURCE_LABELS[source.label])
@@ -311,6 +314,15 @@ class MeetingService:
 
     def rename(self, meeting_id: str, title: str) -> dict:
         self.store.update_meeting(meeting_id, title=" ".join(str(title).split()))
+        return self.store.get_meeting(meeting_id)
+
+    def set_mic_shared(self, meeting_id: str, shared: bool) -> dict:
+        meeting = self.store.get_meeting(meeting_id)
+        if meeting is None:
+            raise MeetingError("This meeting no longer exists.")
+        sources = dict(meeting.get("sources") or {})
+        sources[MIC] = dict(sources.get(MIC) or {}, shared=bool(shared))
+        self.store.update_meeting(meeting_id, sources=sources)
         return self.store.get_meeting(meeting_id)
 
     def save_notes(self, meeting_id: str, content: str) -> dict:
@@ -473,13 +485,21 @@ class MeetingService:
             "policy": self.upload_policy(),
         }
 
-    def _speaker_targets(self, meeting_id: str) -> list[str]:
+    def speaker_tracks_available(self, meeting_id: str) -> list[str]:
         sources = {chunk["source"] for chunk in self.store.list_chunks(meeting_id)}
-        if SYSTEM in sources:
-            return [SYSTEM]
-        return [MIC] if MIC in sources else []
+        return [source for source in (MIC, SYSTEM) if source in sources]
 
-    def label_speakers(self, meeting_id: str, *, remote_ok: bool = False) -> dict:
+    def _speaker_targets(self, meeting_id: str, meeting: dict | None = None) -> list[str]:
+        """Default tracks to label: the call audio, plus the microphone when the
+        meeting says several people share it; a lone microphone is labelled."""
+        available = self.speaker_tracks_available(meeting_id)
+        meeting = meeting or self.store.get_meeting(meeting_id) or {}
+        shared = bool((meeting.get("sources") or {}).get(MIC, {}).get("shared"))
+        if SYSTEM in available and MIC in available:
+            return [MIC, SYSTEM] if shared else [SYSTEM]
+        return available
+
+    def label_speakers(self, meeting_id: str, *, remote_ok: bool = False, tracks: list[str] | None = None) -> dict:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
@@ -491,15 +511,17 @@ class MeetingService:
             raise MeetingError("Transcribe the meeting first.")
         if not self.speaker_labels_info()["configured"]:
             raise MeetingError("Speaker labels need a pyannoteAI key. Add one in Settings > Meetings.")
-        targets = self._speaker_targets(meeting_id)
+        available = self.speaker_tracks_available(meeting_id)
+        wanted = [str(t) for t in (tracks or [])] or self._speaker_targets(meeting_id, meeting)
+        targets = [source for source in (MIC, SYSTEM) if source in wanted and source in available]
         if not targets:
-            raise MeetingError("No audio track to label.")
+            raise MeetingError("No audio track to label." if not available else "Choose at least one recorded track.")
         if not remote_ok and self.upload_policy() != "allow":
             raise ConsentRequired(self.upload_disclosure(targets))
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] in ("speakers", "transcribe"):
                 return job
-        job = self.store.create_job(meeting_id, "speakers", "Waiting")
+        job = self.store.create_job(meeting_id, "speakers", json.dumps({"tracks": targets}))
         self._jobs.put(job["id"])
         return job
 
@@ -510,7 +532,13 @@ class MeetingService:
             return
         cfg = self.config()
         client = self._diarizer_factory(cfg)
-        targets = self._speaker_targets(meeting_id)
+        targets = []
+        try:
+            targets = [t for t in json.loads(job.get("detail") or "{}").get("tracks", []) if t in (MIC, SYSTEM)]
+        except (ValueError, AttributeError):
+            targets = []
+        available = self.speaker_tracks_available(meeting_id)
+        targets = [t for t in targets if t in available] or self._speaker_targets(meeting_id, meeting)
         passages = self.store.list_passages(meeting_id)
         should_stop = lambda: meeting_id in self._cancelled or self._closed
         found = []
@@ -523,9 +551,15 @@ class MeetingService:
                     job["id"], detail=f"{label} · pyannoteAI {status}", progress=0.5))
             mine = [p for p in passages if p["source"] == source]
             others = [p for p in passages if p["source"] != source]
-            labelled, speakers = diarization.assign_speakers(mine, segments, source=source, fallback_speaker=source)
+            labelled, speakers = diarization.assign_speakers(mine, segments, source=source, fallback_speaker=source,
+                                                             first_number=len(found) + 1)
             for speaker in speakers:
-                self.store.ensure_speaker(meeting_id, speaker["id"], source, speaker["name"], confirmed=False)
+                existing = self.store.get_speaker(meeting_id, speaker["id"])
+                if existing is None:
+                    self.store.ensure_speaker(meeting_id, speaker["id"], source, speaker["name"], confirmed=False)
+                elif not existing["confirmed"]:
+                    # unconfirmed placeholders take the fresh numbering; confirmed names stay
+                    self.store.rename_speaker(meeting_id, speaker["id"], speaker["name"], confirmed=False)
             found.extend(speakers)
             passages = others + labelled
         if should_stop():
@@ -624,9 +658,10 @@ class MeetingService:
             self.remove_audio(meeting_id)
         cfg = self.config()
         if (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
-                and self.upload_policy() == "allow" and self._speaker_targets(meeting_id)
-                and latest and latest["audio_state"] == "kept"):
-            self._jobs.put(self.store.create_job(meeting_id, "speakers", "Waiting")["id"])
+                and self.upload_policy() == "allow" and latest and latest["audio_state"] == "kept"
+                and self._speaker_targets(meeting_id, latest)):
+            self._jobs.put(self.store.create_job(
+                meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)}))["id"])
         if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
             info = self.text_model_info(cfg)
             if not info["remote"] or self.remote_policy() == "allow":

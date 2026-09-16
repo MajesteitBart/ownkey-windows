@@ -130,6 +130,11 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(speakers, [{"id": "system-1", "name": "Speaker 1", "label": "SPEAKER_01"},
                                     {"id": "system-2", "name": "Speaker 2", "label": "SPEAKER_00"}])
 
+    def test_numbering_continues_across_tracks(self):
+        passages = [{"id": "p0001", "source": "mic", "speaker_id": "mic", "start": 0.0, "end": 1.0, "text": "a", "tokens": [(" a", 0.0, 1.0)]}]
+        _labelled, speakers = assign_speakers(passages, SEGMENTS, source="mic", fallback_speaker="mic", first_number=3)
+        self.assertEqual(speakers, [{"id": "mic-1", "name": "Speaker 3", "label": "SPEAKER_01"}])
+
     def test_token_without_segment_keeps_previous_speaker(self):
         passages = [{"id": "p0001", "source": "mic", "speaker_id": "mic", "start": 0.0, "end": 12.0, "text": "a b c",
                      "tokens": [(" a", 0.0, 1.0), (" b", 10.0, 10.5), (" c", 10.5, 11.0)]}]

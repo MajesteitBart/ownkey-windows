@@ -223,10 +223,35 @@ class ServiceTests(unittest.TestCase):
         # Remembered policy skips the question; a missing key is a clear error.
         self.service.set_policy("upload", "allow")
         self.assertEqual(self.service.label_speakers(meeting["id"])["kind"], "speakers")
+        self.assertTrue(wait_for(lambda: not self.store.list_jobs(meeting["id"], ("queued", "running"))))
         self.cfg["pyannote_api_key"] = ""
         with self.assertRaises(MeetingError) as missing:
             self.service.label_speakers(meeting["id"])
         self.assertIn("pyannoteAI key", str(missing.exception))
+        self.cfg["pyannote_api_key"] = "pk"
+        # Several people share the microphone: label that track too, numbering on.
+        self.assertEqual(self.service._speaker_targets(meeting["id"]), ["system"])
+        self.service.set_mic_shared(meeting["id"], True)
+        self.assertTrue(self.store.get_meeting(meeting["id"])["sources"]["mic"]["shared"])
+        self.assertEqual(self.service._speaker_targets(meeting["id"]), ["mic", "system"])
+        self.service.set_policy("upload", "ask")
+        with self.assertRaises(ConsentRequired) as both:
+            self.service.label_speakers(meeting["id"], tracks=["mic", "system"])
+        self.assertIn("Microphone and Call audio", both.exception.disclosure["sent"][0])
+        self.assertNotIn("Microphone track", both.exception.disclosure["not_sent"])
+        uploads.clear()
+        self.service.rename_speaker(meeting["id"], "system-2", "Femke", confirmed=True)
+        job = self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["mic", "system", "bogus"])
+        self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] in ("done", "error")))
+        self.assertEqual(self.store.get_job(job["id"])["state"], "done", self.store.get_job(job["id"])["error"])
+        self.assertEqual([u[0] for u in uploads], [f"{meeting['id']}-mic.wav", f"{meeting['id']}-system.wav"])
+        names = {s["id"]: s["name"] for s in self.store.list_speakers(meeting["id"])}
+        self.assertEqual((names["mic-1"], names["mic-2"]), ("Speaker 1", "Speaker 2"))
+        self.assertEqual(names["system-1"], "Speaker 3", "numbering continues across tracks; no second Speaker 1")
+        self.assertEqual(names["system-2"], "Femke", "a confirmed name survives relabelling")
+        self.assertEqual({p["speaker_id"] for p in self.store.list_passages(meeting["id"]) if p["source"] == "mic"}, {"mic-1", "mic-2"})
+        with self.assertRaises(MeetingError):
+            self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["bogus"])
 
     def test_interrupted_source_notifies_and_transcription_can_run_later(self):
         meeting = self.record()
@@ -291,9 +316,12 @@ class ServerTests(unittest.TestCase):
         status, _h, body = self.request("GET", "/api/status")
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)["capturing"])
-        status, _h, body = self.request("POST", "/api/meetings", {"title": "Via API", "mic": True, "system": False})
+        status, _h, body = self.request("POST", "/api/meetings", {"title": "Via API", "mic": True, "system": False, "mic_shared": True})
         self.assertEqual(status, 201)
         meeting = json.loads(body)["meeting"]
+        self.assertTrue(meeting["sources"]["mic"]["shared"])
+        status, _h, body = self.request("PUT", f"/api/meetings/{meeting['id']}", {"mic_shared": False})
+        self.assertFalse(json.loads(body)["meeting"]["sources"]["mic"]["shared"])
         self.sources[MIC].push(np.full(16000, 3000, dtype=np.int16))
         time.sleep(0.35)
         status, _h, body = self.request("POST", f"/api/meetings/{meeting['id']}/stop")

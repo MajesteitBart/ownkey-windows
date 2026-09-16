@@ -33,11 +33,15 @@ usable slice, not the whole spec.
   meeting keeps its audio; there is no download and no cloud transcription
   for meetings.
 - **Speaker labels through pyannoteAI** (`precision-2`, exclusive
-  diarization). "Add speaker labels" in the Transcript tab uploads the call
-  audio track (or the microphone track when it is the only source) to
-  api.pyannote.ai, polls the job, gives every token the speaker whose segment
-  overlaps it most, splits passages where the speaker changes, and names them
-  Speaker 1, Speaker 2, … until you confirm names. The first upload shows a
+  diarization). "Add speaker labels" in the Transcript tab asks which tracks
+  have several people: call audio only (default), call audio plus the
+  microphone (several people around one PC), or the microphone only. New
+  meeting has a "several people share this microphone" option that sets the
+  default. Each chosen track is uploaded to api.pyannote.ai; the job is
+  polled; every token gets the speaker whose segment overlaps it most;
+  passages split where the speaker changes; speakers are numbered
+  Speaker 1, Speaker 2, … across all labelled tracks (never two Speaker 1s)
+  until you confirm names, and confirmed names survive relabelling. The first upload shows a
   disclosure (what is sent, what is not, pyannoteAI deletes uploads within 48
   hours and results within 24 hours, no training); "Don't ask again" stores
   `meetings_upload_policy = allow`. The key lives in Settings › Meetings

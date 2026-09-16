@@ -57,7 +57,7 @@
   const state = {
     status: null, meetings: [], view: 'empty', meetingId: null, detail: null, tab: 'thoughts',
     query: '', editing: null, showOriginal: new Set(), devices: null, playing: false, playTime: 0,
-    form: { title: '', mic: true, system: true, mic_device: '', system_device: '', retention: 'days7' },
+    form: { title: '', mic: true, system: true, mic_device: '', system_device: '', retention: 'days7', mic_shared: false },
     noteTimer: null, noteSaved: 'idle', menu: null,
   };
 
@@ -181,7 +181,9 @@
         <div class="srcgrid" style="margin-top:12px">
           <div class="card srcbox ${f.mic ? '' : 'off'}"><div class="h">${ico('mic', 15)}Microphone</div>
             <div class="field sm">${ico('mic', 13)}<select data-mic-device ${f.mic ? '' : 'disabled'}>${options(d.inputs, f.mic_device, 'Default microphone')}</select></div>
-            <p>Stored as its own track, labelled Microphone. You can confirm it as “You” after the meeting.</p></div>
+            <p>Stored as its own track, labelled Microphone. You can confirm it as “You” after the meeting.</p>
+            <label class="check"><input type="checkbox" data-mic-shared ${f.mic_shared ? 'checked' : ''} ${f.mic ? '' : 'disabled'}>Several people share this microphone</label>
+            <p class="hint">Speaker labels then cover this track too, so people in the room get their own names.</p></div>
           <div class="card srcbox ${f.system ? '' : 'off'}"><div class="h">${ico('volume', 15)}System audio</div>
             <div class="field sm">${ico('volume', 13)}<select data-system-device ${f.system ? '' : 'disabled'}>${options(d.outputs, f.system_device, 'Default output device')}</select></div>
             <p>Captures everything played through that output: the call, but also music and notifications. Stored as Call audio. Headphones keep it out of your microphone.</p></div>
@@ -206,13 +208,14 @@
     $('[data-title]').oninput = (e) => { f.title = e.target.value; };
     $$('[data-src]').forEach((b) => b.onclick = () => { const v = b.dataset.src; f.mic = v !== 'system'; f.system = v !== 'mic'; render(); });
     $('[data-mic-device]').onchange = (e) => { f.mic_device = e.target.value; };
+    $('[data-mic-shared]').onchange = (e) => { f.mic_shared = e.target.checked; };
     $('[data-system-device]').onchange = (e) => { f.system_device = e.target.value; };
     $$('[data-retention]').forEach((b) => b.onclick = () => { f.retention = b.dataset.retention; render(); });
     $('[data-cancel]').onclick = () => { state.view = state.meetings.length ? 'empty' : 'empty'; render(); };
     $('[data-start]').onclick = async () => {
       const button = $('[data-start]'); button.disabled = true;
       try {
-        const body = { title: f.title, mic: f.mic, system: f.system, retention: f.retention };
+        const body = { title: f.title, mic: f.mic, system: f.system, retention: f.retention, mic_shared: f.mic && f.mic_shared };
         if (f.mic_device !== '') body.mic_device = Number(f.mic_device);
         if (f.system_device !== '') body.system_device = f.system_device;
         const created = await post('/api/meetings', body);
@@ -243,7 +246,8 @@
   function renderMeeting() {
     const d = state.detail, m = d.meeting, cap = live();
     const names = Object.fromEntries(d.speakers.map((s) => [s.id, s.name]));
-    const sources = Object.keys(m.sources || {}).map((k) => SOURCE[k] ? SOURCE[k].label : k).join(' + ') || 'No sources';
+    const sources = (Object.keys(m.sources || {}).map((k) => SOURCE[k] ? SOURCE[k].label : k).join(' + ') || 'No sources')
+      + (m.sources && m.sources.mic && m.sources.mic.shared ? ' (shared microphone)' : '');
     const tabs = [['thoughts', 'edit', 'My thoughts', d.notes.rev ? `<span class="badge">rev ${d.notes.rev}</span>` : ''],
       ['transcript', 'text', 'Transcript', runningJob('transcribe') ? `<span class="badge amber">${Math.round((runningJob('transcribe').progress || 0) * 100)}%</span>` : d.passages.length ? `<span class="badge">${d.passages.length}</span>` : ''],
       ['summary', 'sparkle', 'Summary', d.summary ? `<span class="badge ${d.summary.outdated ? 'amber' : 'green'}">${d.summary.outdated ? 'outdated' : 'ready'}</span>` : '']];
@@ -357,7 +361,19 @@
     on('[data-resume]', () => post(`/api/meetings/${id}/resume`).then(tick).catch((e) => toast(e.message)));
     on('[data-stop]', () => post(`/api/meetings/${id}/stop`).then(() => { toast('Recording stopped. Transcribing on this PC.', 'ok'); return tick(); }).catch((e) => toast(e.message)));
     on('[data-transcribe]', () => post(`/api/meetings/${id}/transcribe`).then(tick).catch((e) => toast(e.message)));
-    on('[data-speakers]', () => withConsent((ok) => post(`/api/meetings/${id}/speakers`, { remote_ok: ok })).then((r) => r && tick()).catch((e) => toast(e.message)));
+    on('[data-speakers]', (e) => {
+      const m = state.detail.meeting;
+      const has = (k) => !!(m.sources && m.sources[k]);
+      const run = (tracks) => withConsent((ok) => post(`/api/meetings/${id}/speakers`, { remote_ok: ok, tracks })).then((r) => r && tick()).catch((er) => toast(er.message));
+      if (!(has('mic') && has('system'))) return run(has('system') ? ['system'] : ['mic']);
+      const shared = !!(m.sources.mic && m.sources.mic.shared);
+      openMenu(e.currentTarget, [
+        { label: 'Which tracks have several people?', header: true },
+        { label: `Call audio only${shared ? '' : ' (current)'}`, icon: 'volume', run: () => run(['system']) },
+        { label: `Call audio + microphone${shared ? ' (current)' : ''}`, icon: 'users', run: () => put(`/api/meetings/${id}`, { mic_shared: true }).then(() => run(['mic', 'system'])).catch((er) => toast(er.message)) },
+        { label: 'Microphone only', icon: 'mic', run: () => run(['mic']) },
+      ]);
+    });
     on('[data-settings-meetings]', () => post('/api/settings/open').catch((e) => toast(e.message)));
     on('[data-export]', (e) => { window.location.href = `/api/meetings/${id}/export?format=${e.currentTarget.dataset.export}&token=${encodeURIComponent(TOKEN)}`; });
     on('[data-more]', (e) => openMenu(e.currentTarget, [

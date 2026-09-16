@@ -202,7 +202,7 @@ class _Handler(BaseHTTPRequestHandler):
         meeting = self.owner.service.start_meeting(
             str(body.get("title", "")), mic=bool(body.get("mic", True)), system=bool(body.get("system", True)),
             mic_device=body.get("mic_device"), system_device=body.get("system_device"),
-            retention=body.get("retention"))
+            retention=body.get("retention"), mic_shared=bool(body.get("mic_shared")))
         self._json(HTTPStatus.CREATED, {"meeting": meeting})
 
     def h_meeting(self, query, mid):
@@ -210,7 +210,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def h_rename(self, query, mid):
         body = self._body()
-        self._json(HTTPStatus.OK, {"meeting": self.owner.service.rename(mid, str(body.get("title", "")))})
+        service = self.owner.service
+        meeting = None
+        if "title" in body:
+            meeting = service.rename(mid, str(body.get("title", "")))
+        if "mic_shared" in body:
+            meeting = service.set_mic_shared(mid, bool(body.get("mic_shared")))
+        if meeting is None:
+            raise MeetingError("Nothing to change.")
+        self._json(HTTPStatus.OK, {"meeting": meeting})
 
     def h_delete(self, query, mid):
         self.owner.service.delete_meeting(mid)
@@ -221,7 +229,9 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._body() if action in ("summary", "draft", "ask", "speakers") else {}
         remote_ok = bool(body.get("remote_ok"))
         if action == "speakers":
-            return self._json(HTTPStatus.ACCEPTED, {"job": service.label_speakers(mid, remote_ok=remote_ok)})
+            tracks = body.get("tracks")
+            tracks = [str(t) for t in tracks] if isinstance(tracks, list) else None
+            return self._json(HTTPStatus.ACCEPTED, {"job": service.label_speakers(mid, remote_ok=remote_ok, tracks=tracks)})
         if action == "pause":
             return self._json(HTTPStatus.OK, {"capture": service.pause()})
         if action == "resume":
