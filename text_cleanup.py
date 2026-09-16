@@ -65,9 +65,19 @@ def normalize_corrections(value) -> list[dict]:
 
 
 def normalize_filler_languages(value) -> list[str]:
-    codes = [str(code).lower() for code in value] if isinstance(value, (list, tuple)) else []
-    codes = [code for code in codes if code in FILLER_LANGUAGES]
-    return codes or list(DEFAULT_FILLER_LANGUAGES)
+    """Known language codes from ``value``; defaults only when the setting is absent or malformed.
+
+    An explicit empty list is kept, so a user can switch every language off and
+    remove only their own extra words.
+    """
+    if not isinstance(value, (list, tuple)):
+        return list(DEFAULT_FILLER_LANGUAGES)
+    codes = []
+    for code in value:
+        code = str(code).lower()
+        if code in FILLER_LANGUAGES and code not in codes:
+            codes.append(code)
+    return codes
 
 
 def filler_words(languages, custom="") -> tuple[str, ...]:

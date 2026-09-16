@@ -5,6 +5,7 @@ from text_cleanup import (
     clean_transcript,
     filler_words,
     normalize_corrections,
+    normalize_filler_languages,
     normalize_vocabulary,
     remove_fillers,
 )
@@ -45,6 +46,16 @@ class FillerRemovalTests(unittest.TestCase):
         self.assertIn("um", filler_words(["en"]))
         self.assertNotIn("um", filler_words(["en", "de"]))
         self.assertEqual(remove_fillers("Wir gehen um acht.", filler_words(["en", "de"])), "Wir gehen um acht.")
+
+    def test_explicit_empty_language_list_keeps_only_custom_words(self):
+        self.assertEqual(normalize_filler_languages([]), [])
+        self.assertEqual(normalize_filler_languages(None), ["en", "nl"])
+        self.assertEqual(normalize_filler_languages("en"), ["en", "nl"])
+        self.assertEqual(normalize_filler_languages(["NL", "xx", "nl"]), ["nl"])
+        self.assertEqual(filler_words([]), ())
+        self.assertEqual(filler_words([], "basically"), ("basically",))
+        cfg = {"remove_fillers": True, "filler_languages": [], "custom_fillers": "basically"}
+        self.assertEqual(clean_transcript("Um, we basically left.", cfg), "Um, we left.")
 
     def test_custom_fillers_and_empty_lists(self):
         self.assertEqual(remove_fillers("So basically, we, basically, left.", filler_words(["en"], "basically")),
