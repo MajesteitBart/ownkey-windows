@@ -2467,7 +2467,10 @@ class OwnkeyApp:
                 local_models=self.local_models, local_transcriber=self.local_transcriber,
                 get_rewrite_key=get_rewrite_api_key, get_audio_key=get_effective_api_key, notify=self._notify_error,
                 open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
+                dictation_busy=lambda: bool(self._recording),
+                yield_to=lambda: bool(self._recording) or not self._transcription_queue.empty(),
             )
+            self._meeting_seen_state = None
             self.meeting_server = MeetingServer(self.meetings)
             self.meeting_server.start()
         except Exception as exc:
@@ -2489,9 +2492,30 @@ class OwnkeyApp:
         return bool(capture and capture.get("state") == "paused")
 
     def _meeting_capture_changed(self) -> None:
-        """Keep the tray icon honest while a meeting records."""
-        if not getattr(self, "_shutting_down", False):
-            self._set_state(self._state)
+        """Keep the tray icon honest and let the pill announce meeting transitions."""
+        if getattr(self, "_shutting_down", False):
+            return
+        self._set_state(self._state)
+        capture = self.meetings.capture_state() if self.meetings is not None else None
+        state = capture.get("state") if capture else "off"
+        previous = getattr(self, "_meeting_seen_state", None)
+        self._meeting_seen_state = state
+        if previous == state or self._recording:
+            return
+        messages = {
+            "recording": "Meeting recording" if previous in (None, "off") else "Meeting resumed",
+            "paused": "Meeting paused",
+            "stopped": "Meeting saved",
+            "interrupted": "Meeting interrupted",
+        }
+        message = messages.get(state) or ("Meeting saved" if state == "off" and previous in ("recording", "paused") else None)
+        if not message:
+            return
+        self._overlay.update(connection=self._connection_state, listening="ready", processing="idle",
+                             target=self._target_status(), level=0.0, message=message)
+        self._overlay.show()
+        self._ensure_tauri_overlay(resync=True)
+        self._overlay.hide_later(2200)
 
     def _meeting_blocks_hotkeys(self) -> bool:
         """During meeting capture the meeting owns the audio devices: the hotkeys

@@ -311,6 +311,24 @@ class ServiceTests(unittest.TestCase):
             self.service.transcribe(meeting["id"])
         self.assertIn("not set up", str(missing.exception))
 
+    def test_dictation_comes_first(self):
+        busy = {"dictating": False, "queue": False}
+        self.service._dictation_busy = lambda: busy["dictating"]
+        self.service._yield_to = lambda: busy["queue"]
+        busy["dictating"] = True
+        with self.assertRaises(MeetingError) as blocked:
+            self.service.start_meeting("Over a held key")
+        self.assertIn("dictation key", str(blocked.exception))
+        busy["dictating"] = False
+        meeting = self.record()
+        busy["queue"] = True  # dictation audio is waiting for the decoder
+        self.service.stop()
+        time.sleep(0.6)
+        self.assertEqual(self.transcriber.decoded, 0, "meeting windows wait while dictation is busy")
+        busy["queue"] = False
+        self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
+        self.assertGreater(self.transcriber.decoded, 0)
+
     def test_interrupted_source_notifies_and_transcription_can_run_later(self):
         meeting = self.record()
         self.sources[SYSTEM].fail("Speakers disappeared")

@@ -106,6 +106,36 @@ class TrayTests(unittest.TestCase):
         app._notify_error.assert_called_once()
 
 
+class PillTests(unittest.TestCase):
+    def test_capture_transitions_show_in_the_pill_once(self):
+        app = make_app(capturing=True)
+        app._meeting_seen_state = None
+        app._meeting_capture_changed()
+        self.assertEqual(app._overlay.update.call_args.kwargs["message"], "Meeting recording")
+        app._overlay.reset_mock()
+        app._meeting_capture_changed()  # same state again: no pill message, no show
+        app._overlay.show.assert_not_called()
+        self.assertFalse(any(str(c.kwargs.get("message", "")).startswith("Meeting") for c in app._overlay.update.call_args_list))
+        app = make_app(capturing=True, paused=True)
+        app._meeting_seen_state = "recording"
+        app._meeting_capture_changed()
+        self.assertEqual(app._overlay.update.call_args.kwargs["message"], "Meeting paused")
+        app = make_app(capturing=False)
+        app._meeting_seen_state = "recording"
+        app._meeting_capture_changed()
+        self.assertEqual(app._overlay.update.call_args.kwargs["message"], "Meeting saved")
+        # show() cancels the tray refresh's short hide; the 2.2 s hide wins
+        app._overlay.show.assert_called_once()
+        app._overlay.hide_later.assert_called_with(2200)
+
+    def test_pill_stays_quiet_while_dictation_records(self):
+        app = make_app(capturing=True)
+        app._recording = True
+        app._meeting_seen_state = None
+        app._meeting_capture_changed()
+        app._overlay.show.assert_not_called()
+
+
 class QuitTests(unittest.TestCase):
     def test_quit_asks_while_recording_and_respects_keep_recording(self):
         app = make_app(capturing=True)

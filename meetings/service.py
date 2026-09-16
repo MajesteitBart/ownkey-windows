@@ -54,9 +54,13 @@ class MeetingService:
     def __init__(self, store: MeetingStore, *, get_config, set_config=None, local_models=None,
                  local_transcriber=None, chat=None, get_rewrite_key=None, get_audio_key=None, notify=None,
                  open_settings=None, source_factory=None, on_capture_change=None, diarizer_factory=None,
-                 cloud_transcriber=None, clock=time.monotonic):
+                 cloud_transcriber=None, dictation_busy=None, yield_to=None, clock=time.monotonic):
         self.store = store
         self._on_capture_change = on_capture_change or (lambda: None)
+        # Dictation comes first: a meeting cannot start over a held hotkey, and
+        # background decoding pauses between windows while dictation is busy.
+        self._dictation_busy = dictation_busy or (lambda: False)
+        self._yield_to = yield_to or (lambda: False)
         self._diarizer_factory = diarizer_factory or self._default_diarizer
         self._cloud_transcriber = cloud_transcriber or self._default_cloud_transcriber
         self._get_audio_key = get_audio_key or (lambda cfg: str(cfg.get("audio_api_key", "") or ""))
@@ -280,6 +284,8 @@ class MeetingService:
         with self._lock:
             if self.is_capturing():
                 raise MeetingError("A meeting is already recording. Stop it first.")
+            if self._dictation_busy():
+                raise MeetingError("Release the dictation key first; the microphone is in use.")
             retention = retention if retention in RETENTION_CHOICES else self.status()["default_retention"]
             wants = {"mic": mic, "system": system, "mic_device": mic_device, "system_device": system_device}
             sources = self._source_factory(wants)
@@ -717,6 +723,7 @@ class MeetingService:
                 return (self._cloud_transcriber(engine, key, wav_bytes, language, vocabulary), [], [], [])
 
             where = f"{engine['label']} ({'remote' if engine['remote'] else 'local endpoint'})"
+        decode = self._yielding(decode, meeting_id)
         try:
             self.store.clear_passages(meeting_id)
             chunks_by_source = {}
@@ -768,6 +775,19 @@ class MeetingService:
             info = self.text_model_info(cfg)
             if not info["remote"] or self.remote_policy() == "allow":
                 self._jobs.put(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False}))["id"])
+
+    def _yielding(self, decode, meeting_id: str, *, max_wait: float = 120.0):
+        """Wrap a window decoder so it waits, between windows, while dictation
+        is recording or has audio waiting; a meeting never delays typing."""
+
+        def wrapped(wav_bytes):
+            waited = 0.0
+            while self._yield_to() and waited < max_wait and meeting_id not in self._cancelled and not self._closed:
+                time.sleep(0.1)
+                waited += 0.1
+            return decode(wav_bytes)
+
+        return wrapped
 
     def _run_summary(self, job: dict) -> None:
         meeting_id = job["meeting_id"]

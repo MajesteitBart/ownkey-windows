@@ -78,10 +78,19 @@ usable slice, not the whole spec.
   exported copies stay where you put them.
 - **Retention**: keep 7 days after transcription (default), keep until deleted,
   or remove right after transcription. A sweep runs at start.
-- **Tray and hotkeys**: while a meeting records the tray icon shows recording,
-  the Meetings submenu offers Pause/Resume and Stop, dictation hotkeys show
-  "Meeting recording · mm:ss" in the pill instead of recording, and Quit asks
-  whether to stop and save or keep recording.
+- **Tray, pill and hotkeys**: Meetings runs inside the same Ownkey process,
+  with the same tray icon, Settings window, config file, provider adapters
+  and Orukeet model manager as dictation. While a meeting records the tray
+  icon shows recording, the Meetings submenu offers Pause/Resume and Stop,
+  dictation hotkeys show "Meeting recording · mm:ss" in the pill instead of
+  recording, and Quit asks whether to stop and save or keep recording. The
+  pill announces meeting transitions for two seconds (recording, paused,
+  resumed, saved, interrupted) and never interrupts a dictation in progress.
+  Dictation comes first: a meeting cannot start while the dictation key is
+  held, and meeting transcription pauses between windows while dictation is
+  recording or has audio waiting for the decoder, so typing never waits on
+  a meeting. There is no separate always-on-top recorder widget; the tray
+  and the meeting window carry the controls.
 
 ## Config keys
 
