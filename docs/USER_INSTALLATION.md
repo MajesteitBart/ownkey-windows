@@ -8,10 +8,11 @@ This guide is for people who want to install and use Ownkey on Windows 10 or
 - Windows 10 or 11 on a compatible 64-bit PC
 - A microphone allowed under **Windows Settings → Privacy & security →
   Microphone**
-- An API key for a supported transcription provider: OpenAI, Google Gemini, or
-  Mistral
+- For transcription, either the local Orukeet model (a one-time 487 MB
+  download, no API key) or an API key for OpenAI, Google Gemini, or Mistral
 
-Rewriting can use OpenAI, Anthropic, Google Gemini, Mistral, or Ollama.
+Rewriting is optional and can use OpenAI, Anthropic, Google Gemini, Mistral,
+OpenRouter, a custom OpenAI-compatible server, or local Ollama.
 
 ## Install the app
 
@@ -22,9 +23,12 @@ Rewriting can use OpenAI, Anthropic, Google Gemini, Mistral, or Ollama.
 4. Leave **Launch Ownkey** selected on the final page, or open Ownkey from the
    Start menu or desktop shortcut.
 5. Right-click the Ownkey tray icon and choose **Settings**.
-6. Configure the **Audio** provider and, optionally, a different **Rewriting**
-   provider. Enter each API key, refresh the model list, choose a model, and
-   click **Save**.
+6. On the **Transcription** page choose **Local (Orukeet)** and click
+   **Download**, or pick a cloud provider and enter its API key. Optionally set
+   up a **Rewriting** provider: enter the key, refresh the model list, choose a
+   model, and click **Save**.
+7. Add your name and the terms you use on the **Dictionary** page so they are
+   typed the way you spell them.
 
 The public `v0.3.0` installer published before the signing pipeline is unsigned,
 so Windows may show an **Unknown publisher** warning. Verify that an older
@@ -54,9 +58,10 @@ Ownkey stores its settings and API keys locally in:
 %APPDATA%\Ownkey\config.json
 ```
 
-Treat this file as sensitive. Ownkey sends audio—and selected text when
-rewriting—directly to the provider you configure. There is no Ownkey account,
-relay server, or telemetry service in the middle.
+Treat this file as sensitive. With a cloud transcription provider, Ownkey sends
+audio directly to that provider. With Local (Orukeet), audio stays on your PC.
+Selected text goes to the rewrite provider only when you use rewriting. There
+is no Ownkey account, relay server, or telemetry service in the middle.
 
 ## Troubleshooting
 
