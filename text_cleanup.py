@@ -114,14 +114,18 @@ def remove_fillers(text: str, words) -> str:
     def replace(match):
         start = match.start()
         before = text[:start].rstrip()
-        pre, post = match.group("pre"), match.group("post")
-        sentence_start = not before or before[-1] in _SENTENCE_END + _MARK or before.endswith("\n")
+        pre, lead, post = match.group("pre"), match.group("lead"), match.group("post")
+        line_start = "\n" in lead
+        sentence_start = line_start or not before or before[-1] in _SENTENCE_END + _MARK
         ending = next((char for char in post if char in _SENTENCE_END), "")
-        if pre:
+        if pre and not line_start:
             sentence_start = False
+        if line_start:
+            # Keep the line break; the word that now opens the line gets its capital.
+            return (pre or "") + lead + _MARK
         if sentence_start:
             # Mark the spot so the word that now opens the sentence gets its capital.
-            return (match.group("lead") if before else "") + _MARK
+            return (lead if before else "") + _MARK
         if ending:
             return ending
         return "," if pre else ""
@@ -130,12 +134,19 @@ def remove_fillers(text: str, words) -> str:
     while previous != text:
         previous = text
         text = pattern.sub(replace, text)
-    text = re.sub(rf"{_MARK}\s*(\S)", lambda match: match.group(1).upper(), text)
+    text = re.sub(rf"{_MARK}\s*(\S+)", lambda match: _capitalize(match.group(1)), text)
     text = text.replace(_MARK, "")
     text = re.sub(r"[ \t]+([,.;:!?…])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     return text.strip()
+
+
+def _capitalize(word: str) -> str:
+    """Capitalize a plain lowercase word; leave intentional casing such as iPhone alone."""
+    if word[0].islower() and not any(char.isupper() for char in word[1:]):
+        return word[0].upper() + word[1:]
+    return word
 
 
 def apply_corrections(text: str, rules) -> str:

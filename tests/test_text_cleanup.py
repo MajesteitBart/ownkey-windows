@@ -65,6 +65,15 @@ class FillerRemovalTests(unittest.TestCase):
 
     def test_newlines_are_preserved(self):
         self.assertEqual(self.clean("First line, uh.\num second line"), "First line.\nSecond line")
+        self.assertEqual(self.clean("First line\num second line"), "First line\nSecond line")
+        self.assertEqual(self.clean("First line,\num second line"), "First line,\nSecond line")
+        self.assertEqual(self.clean("Eerste alinea.\n\nUhm tweede alinea."), "Eerste alinea.\n\nTweede alinea.")
+
+    def test_intentional_casing_survives_a_removed_leading_filler(self):
+        self.assertEqual(self.clean("Um, iPhone works."), "iPhone works.")
+        self.assertEqual(self.clean("Yes. Um, eBay works."), "Yes. eBay works.")
+        self.assertEqual(self.clean("Um, NASA works."), "NASA works.")
+        self.assertEqual(self.clean("Um, hello there."), "Hello there.")
 
 
 class CorrectionTests(unittest.TestCase):
