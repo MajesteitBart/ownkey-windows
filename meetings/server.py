@@ -226,8 +226,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def h_action(self, query, mid, action):
         service = self.owner.service
-        body = self._body() if action in ("summary", "draft", "ask", "speakers") else {}
+        body = self._body() if action in ("summary", "draft", "ask", "speakers", "transcribe") else {}
         remote_ok = bool(body.get("remote_ok"))
+        if action == "transcribe":
+            return self._json(HTTPStatus.ACCEPTED, {"job": service.transcribe(mid, remote_ok=remote_ok)})
         if action == "speakers":
             tracks = body.get("tracks")
             tracks = [str(t) for t in tracks] if isinstance(tracks, list) else None
@@ -238,8 +240,6 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.OK, {"capture": service.resume()})
         if action == "stop":
             return self._json(HTTPStatus.OK, {"capture": service.stop()})
-        if action == "transcribe":
-            return self._json(HTTPStatus.ACCEPTED, {"job": service.transcribe(mid)})
         if action == "summary":
             return self._json(HTTPStatus.ACCEPTED, {"job": service.summarize(
                 mid, include_notes=bool(body.get("include_notes")), remote_ok=remote_ok)})
@@ -297,10 +297,11 @@ class _Handler(BaseHTTPRequestHandler):
     def h_policy(self, query):
         body = self._body()
         service = self.owner.service
-        for kind in ("remote", "upload"):
+        for kind in ("remote", "upload", "transcription"):
             if kind in body:
                 service.set_policy(kind, str(body.get(kind)))
-        self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(), "upload_policy": service.upload_policy()})
+        self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(), "upload_policy": service.upload_policy(),
+                                   "transcription_policy": service.transcription_policy()})
 
     def h_open_settings(self, query):
         self.owner.service.open_settings()

@@ -20,6 +20,17 @@ usable slice, not the whole spec.
   marks the meeting interrupted. A crash is reconciled on the next start: the
   meeting is marked interrupted, chunk rows without files are dropped, and
   Ownkey notifies you. Recording never resumes on its own.
+- **Transcription with the same providers as dictation.** Settings › Meetings
+  › Transcription offers "Same as dictation" (default), Orukeet on this PC,
+  or any audio provider with its own key, endpoint and model (OpenAI,
+  Mistral, Google, custom OpenAI-compatible endpoints). A cloud provider
+  receives every recorded track as WAV in windows of up to 28 seconds and
+  returns text per window, so those passages carry window timing (shown as
+  "≈ time"); it asks before the first upload and "Don't ask again" stores
+  `meetings_transcription_policy = allow`. A custom endpoint on localhost
+  counts as local and never asks. After Stop, a cloud engine that still
+  needs consent waits: the window asks when it is open, and the meeting
+  shows "Not transcribed yet" with a Transcribe button otherwise.
 - **Transcription on this PC** with the installed Orukeet model, after Stop.
   Orukeet has no hard clip limit, but it drops words when one decode window is
   long or mixes languages (a 29 s track with English and Dutch turns lost
@@ -78,6 +89,9 @@ usable slice, not the whole spec.
 |---|---|---|
 | `meetings_remote_policy` | `ask` | `allow` skips the disclosure for remote text models |
 | `meetings_upload_policy` | `ask` | `allow` skips the disclosure for uploading audio to pyannoteAI |
+| `meetings_transcription_policy` | `ask` | `allow` skips the disclosure for sending audio to a cloud transcription provider |
+| `meetings_audio_provider` | `same` | `same` follows the dictation provider; otherwise `orukeet`, `openai`, `mistral`, `google` or `custom` |
+| `meetings_audio_api_key`, `meetings_audio_endpoint`, `meetings_audio_model` | empty | the meeting provider's own settings when it is not `same` |
 | `meetings_auto_summary` | `false` | run a summary right after transcription (only when no disclosure is pending) |
 | `meetings_auto_speakers` | `false` | label speakers right after transcription (only when the upload is allowed) |
 | `meetings_retention` | `days7` | default retention for new meetings |
@@ -115,6 +129,9 @@ usable slice, not the whole spec.
   fixtures so no microphone was opened without you).
 - Long meetings (60 to 120 minutes), Bluetooth routing, echo, clock drift
   figures. The spec's validation list still applies.
+- Cloud transcription of meetings was exercised with a fake provider in the
+  tests only; the real request goes through the same `transcribe_audio`
+  adapter dictation uses every day, one call per window.
 - Speaker labels were exercised on a 29 s synthetic track only. Long
   uploads (a one-hour track is about 115 MB of WAV) and real overlapping
   speech have not been tried; pyannoteAI documents no size limit.

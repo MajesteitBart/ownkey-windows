@@ -21,14 +21,21 @@ from .transcription import merge_tracks, transcribe_track
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 DEFAULT_MEETING_CONFIG = {
-    "meetings_remote_policy": "ask",      # ask | allow: text to the rewrite provider
-    "meetings_upload_policy": "ask",      # ask | allow: audio to pyannoteAI
+    "meetings_remote_policy": "ask",         # ask | allow: text to the rewrite provider
+    "meetings_upload_policy": "ask",         # ask | allow: audio to pyannoteAI
+    "meetings_transcription_policy": "ask",  # ask | allow: audio to a cloud transcription provider
     "meetings_auto_summary": False,
     "meetings_auto_speakers": False,
     "meetings_retention": "days7",
     "pyannote_api_key": "",
+    "meetings_audio_provider": "same",       # same | orukeet | openai | mistral | google | custom
+    "meetings_audio_api_key": "",
+    "meetings_audio_endpoint": "",
+    "meetings_audio_model": "",
 }
-POLICY_KEYS = {"remote": "meetings_remote_policy", "upload": "meetings_upload_policy"}
+POLICY_KEYS = {"remote": "meetings_remote_policy", "upload": "meetings_upload_policy",
+               "transcription": "meetings_transcription_policy"}
+CLOUD_WINDOW_NOTE = "windows of up to 28 seconds"
 
 
 class MeetingError(RuntimeError):
@@ -45,12 +52,14 @@ class ConsentRequired(MeetingError):
 
 class MeetingService:
     def __init__(self, store: MeetingStore, *, get_config, set_config=None, local_models=None,
-                 local_transcriber=None, chat=None, get_rewrite_key=None, notify=None,
+                 local_transcriber=None, chat=None, get_rewrite_key=None, get_audio_key=None, notify=None,
                  open_settings=None, source_factory=None, on_capture_change=None, diarizer_factory=None,
-                 clock=time.monotonic):
+                 cloud_transcriber=None, clock=time.monotonic):
         self.store = store
         self._on_capture_change = on_capture_change or (lambda: None)
         self._diarizer_factory = diarizer_factory or self._default_diarizer
+        self._cloud_transcriber = cloud_transcriber or self._default_cloud_transcriber
+        self._get_audio_key = get_audio_key or (lambda cfg: str(cfg.get("audio_api_key", "") or ""))
         self._get_config = get_config
         self._set_config = set_config or (lambda changes: None)
         self.local_models = local_models
@@ -133,6 +142,65 @@ class MeetingService:
         state = self.local_transcriber.snapshot() if self.local_transcriber else {"state": "Unavailable"}
         return {"installed": installed, "state": state.get("state", ""), "error": state.get("error", "")}
 
+    def transcription_policy(self) -> str:
+        return "allow" if self.config().get("meetings_transcription_policy") == "allow" else "ask"
+
+    def transcription_engine(self, cfg: dict | None = None) -> dict:
+        """Which engine transcribes meetings: Orukeet on this PC, or the same
+        cloud providers dictation can use. Never includes the API key."""
+        from providers import normalize_provider, provider_label, provider_requires_key
+
+        cfg = cfg or self.config()
+        choice = str(cfg.get("meetings_audio_provider") or "same")
+        if choice == "same":
+            provider = normalize_provider(cfg.get("audio_provider", "orukeet"), "orukeet")
+            endpoint = str(cfg.get("audio_endpoint", "") or "")
+            model = str(cfg.get("audio_model", "") or "")
+            has_key = bool(self._get_audio_key(cfg))
+        else:
+            provider = normalize_provider(choice, "orukeet")
+            endpoint = str(cfg.get("meetings_audio_endpoint", "") or "")
+            model = str(cfg.get("meetings_audio_model", "") or "")
+            has_key = bool(str(cfg.get("meetings_audio_api_key", "") or "").strip())
+        if provider == "orukeet":
+            return {"kind": "local", "provider": "orukeet", "label": "Orukeet", "model": "", "endpoint": "", "host": "",
+                    "remote": False, "configured": self.local_model_info()["installed"], "follows_dictation": choice == "same"}
+        host = (urlparse(endpoint).hostname or "").lower()
+        try:
+            needs_key = provider_requires_key(provider, endpoint)
+            label = provider_label(provider)
+        except Exception:
+            needs_key, label = True, provider
+        return {"kind": "cloud", "provider": provider, "label": label, "model": model, "endpoint": endpoint, "host": host,
+                "remote": host not in LOCAL_HOSTS, "configured": bool(endpoint) and bool(model) and (not needs_key or has_key),
+                "follows_dictation": choice == "same"}
+
+    def _transcription_key(self, cfg: dict) -> str:
+        if str(cfg.get("meetings_audio_provider") or "same") == "same":
+            return self._get_audio_key(cfg)
+        return str(cfg.get("meetings_audio_api_key", "") or "").strip()
+
+    def _default_cloud_transcriber(self, engine: dict, key: str, wav_bytes: bytes, language: str, vocabulary) -> str:
+        from providers import transcribe_audio
+
+        return transcribe_audio(engine["provider"], key, engine["endpoint"], engine["model"], wav_bytes, language,
+                                vocabulary, timeout=180)
+
+    def transcription_disclosure(self, engine: dict | None = None) -> dict:
+        engine = engine or self.transcription_engine()
+        return {
+            "kind": "transcribe", "policy_key": "transcription",
+            "title": f"Ownkey will send this meeting's audio to {engine['label']}",
+            "intro": f"Meetings are transcribed with the provider you chose in Settings. The recorded tracks go to "
+                     f"{engine['label']} in {CLOUD_WINDOW_NOTE}, over your own key. Pick Orukeet in Settings > Meetings "
+                     "to keep audio on this PC.",
+            "provider": engine["label"], "model": engine["model"], "host": engine["host"],
+            "sent": [f"Every recorded track, as WAV in {CLOUD_WINDOW_NOTE}"],
+            "not_sent": ["My thoughts"],
+            "retention": "What the provider keeps is set by its data policy; Ownkey has no control after upload.",
+            "policy": self.transcription_policy(),
+        }
+
     def _default_chat(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         from providers import complete_rewrite
 
@@ -170,10 +238,12 @@ class MeetingService:
             "capturing": bool(current and current["state"] in ("recording", "paused")),
             "capture": current,
             "local_model": self.local_model_info(),
+            "transcriber": self.transcription_engine(cfg),
             "text_model": self.text_model_info(cfg),
             "speaker_labels": self.speaker_labels_info(cfg),
             "remote_policy": self.remote_policy(),
             "upload_policy": self.upload_policy(),
+            "transcription_policy": self.transcription_policy(),
             "auto_summary": bool(cfg.get("meetings_auto_summary")),
             "auto_speakers": bool(cfg.get("meetings_auto_speakers")),
             "default_retention": cfg.get("meetings_retention") if cfg.get("meetings_retention") in RETENTION_CHOICES else "days7",
@@ -257,7 +327,12 @@ class MeetingService:
         self._audio_cache.clear()
         self._capture_changed()
         if summary["state"] == "stopped":
-            self.transcribe(meeting_id)
+            try:
+                self.transcribe(meeting_id)
+            except ConsentRequired:
+                pass  # a cloud engine waits for the user's go-ahead in the window
+            except MeetingError as exc:
+                self.notify(str(exc))
         return summary
 
     def _interrupted(self, session: CaptureSession, reason: str) -> None:
@@ -383,7 +458,7 @@ class MeetingService:
             time.sleep(0.2)
 
     # ── jobs ───────────────────────────────────────────────────────
-    def transcribe(self, meeting_id: str) -> dict:
+    def transcribe(self, meeting_id: str, *, remote_ok: bool = False) -> dict:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
@@ -396,6 +471,13 @@ class MeetingService:
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] == "transcribe":
                 return job
+        engine = self.transcription_engine()
+        if engine["kind"] == "cloud":
+            if not engine["configured"]:
+                raise MeetingError(f"{engine['label']} is not set up for meeting transcription. "
+                                   "Check the key, endpoint and model in Settings > Meetings, or pick Orukeet.")
+            if engine["remote"] and not remote_ok and self.transcription_policy() != "allow":
+                raise ConsentRequired(self.transcription_disclosure(engine))
         job = self.store.create_job(meeting_id, "transcribe", "Waiting for the model")
         self._jobs.put(job["id"])
         return job
@@ -608,14 +690,33 @@ class MeetingService:
 
     def _run_transcribe(self, job: dict) -> None:
         meeting_id = job["meeting_id"]
-        if self.local_models is None or self.local_transcriber is None or not self.local_models.files_present():
-            raise MeetingError("Orukeet is not installed. Open Settings > Transcription, download it, then retry. "
-                               "Ownkey never sends meeting audio to a cloud provider.")
+        cfg = self.config()
+        engine = self.transcription_engine(cfg)
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             return
-        self.store.update_job(job["id"], detail="Loading Orukeet")
-        attempt = self.local_transcriber.begin_attempt()
+        attempt = None
+        if engine["kind"] == "local":
+            if self.local_models is None or self.local_transcriber is None or not self.local_models.files_present():
+                raise MeetingError("Orukeet is not installed. Open Settings > Transcription, download it, then retry, "
+                                   "or choose a cloud provider for meetings in Settings > Meetings.")
+            self.store.update_job(job["id"], detail="Loading Orukeet")
+            attempt = self.local_transcriber.begin_attempt()
+            decode = attempt.transcribe_timed
+            where = "Orukeet on this PC"
+        else:
+            if not engine["configured"]:
+                raise MeetingError(f"{engine['label']} is not set up for meeting transcription. Check Settings > Meetings.")
+            key = self._transcription_key(cfg)
+            language = str(cfg.get("language", "auto") or "auto")
+            vocabulary = list(cfg.get("vocabulary") or [])
+            self.store.update_job(job["id"], detail=f"Sending windows to {engine['label']}")
+
+            def decode(wav_bytes, engine=engine, key=key):
+                # Cloud providers return text without timing: one passage per window.
+                return (self._cloud_transcriber(engine, key, wav_bytes, language, vocabulary), [], [], [])
+
+            where = f"{engine['label']} ({'remote' if engine['remote'] else 'local endpoint'})"
         try:
             self.store.clear_passages(meeting_id)
             chunks_by_source = {}
@@ -639,7 +740,7 @@ class MeetingService:
                         provisional = [dict(p, id=f"{source}-{p['id']}") for p in new]
                         self.store.append_passages(meeting_id, provisional, meeting["transcript_rev"] + 1)
 
-                tracks[source] = transcribe_track(samples, attempt.transcribe_timed, source=source,
+                tracks[source] = transcribe_track(samples, decode, source=source,
                                                   on_progress=progress, should_stop=should_stop)
                 done_before += totals[source]
                 if should_stop():
@@ -647,11 +748,12 @@ class MeetingService:
             merged = merge_tracks(tracks)
             rev = meeting["transcript_rev"] + 1
             self.store.replace_passages(meeting_id, merged, rev)
-            self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine="orukeet")
+            self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine["provider"])
             self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "transcribed",
-                                 f"{len(merged)} passages · Orukeet on this PC")
+                                 f"{len(merged)} passages · {where}")
         finally:
-            attempt.close()
+            if attempt is not None:
+                attempt.close()
         self._audio_cache.clear()
         latest = self.store.get_meeting(meeting_id)
         if latest and latest["retention"] == "after_transcription":

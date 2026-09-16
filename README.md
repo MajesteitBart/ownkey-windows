@@ -223,8 +223,10 @@ Filler words, and Rewriting.
 
 Right-click the tray icon → **Meetings** → **New meeting**. Ownkey records
 your microphone and, if you choose, the system audio of a call, keeps both
-tracks on your PC, and transcribes them after Stop with the local Orukeet model
-(install it under Settings › Transcription first). The meeting window has three
+tracks on your PC, and transcribes them after Stop with the same provider
+choices as dictation: the local Orukeet model (audio never leaves the PC, with
+word timing) or a cloud provider with your own key (asks before the first
+upload; Settings › Meetings). The meeting window has three
 tabs: **My thoughts** (your notes, never touched by AI), **Transcript** (timed
 passages you can correct, search and play back) and **Summary** (decisions,
 action items and open questions with citations, plus questions and a follow-up

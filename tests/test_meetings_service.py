@@ -253,6 +253,64 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(MeetingError):
             self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["bogus"])
 
+    def test_transcription_engine_follows_dictation_or_its_own_provider(self):
+        self.cfg.update({"audio_provider": "orukeet", "audio_endpoint": "", "audio_model": "orukeet-onnx-int8"})
+        engine = self.service.transcription_engine()
+        self.assertEqual((engine["kind"], engine["provider"], engine["remote"], engine["follows_dictation"]), ("local", "orukeet", False, True))
+        self.cfg.update({"audio_provider": "openai", "audio_endpoint": "https://api.openai.com/v1/audio/transcriptions",
+                         "audio_model": "whisper-1", "audio_api_key": ""})
+        engine = self.service.transcription_engine()
+        self.assertEqual((engine["kind"], engine["label"], engine["remote"], engine["configured"]), ("cloud", "OpenAI", True, False))
+        self.cfg["audio_api_key"] = "sk"
+        self.assertTrue(self.service.transcription_engine()["configured"])
+        self.assertNotIn("key", self.service.status()["transcriber"])
+        self.cfg.update({"meetings_audio_provider": "custom", "meetings_audio_endpoint": "http://localhost:1234/v1/audio/transcriptions",
+                         "meetings_audio_model": "whisper-large", "meetings_audio_api_key": ""})
+        engine = self.service.transcription_engine()
+        self.assertEqual((engine["kind"], engine["remote"], engine["configured"], engine["follows_dictation"]), ("cloud", False, True, False))
+        self.cfg["meetings_audio_provider"] = "orukeet"
+        self.assertEqual(self.service.transcription_engine()["kind"], "local")
+
+    def test_cloud_transcription_asks_first_then_makes_window_passages(self):
+        calls = []
+
+        def cloud(engine, key, wav_bytes, language, vocabulary):
+            calls.append((engine["provider"], key, len(wav_bytes), language, tuple(vocabulary)))
+            return "Hallo daar, dit is de cloud."
+
+        self.service._cloud_transcriber = cloud
+        self.cfg.update({"meetings_audio_provider": "mistral", "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+                         "meetings_audio_model": "voxtral-mini-latest", "meetings_audio_api_key": "mk", "language": "nl",
+                         "vocabulary": ["Ownkey"]})
+        meeting = self.record()
+        self.service.stop()
+        time.sleep(0.3)
+        self.assertEqual(self.store.list_jobs(meeting["id"]), [], "no upload without consent")
+        with self.assertRaises(ConsentRequired) as consent:
+            self.service.transcribe(meeting["id"])
+        self.assertEqual(consent.exception.disclosure["policy_key"], "transcription")
+        self.assertIn("Mistral", consent.exception.disclosure["title"])
+        job = self.service.transcribe(meeting["id"], remote_ok=True)
+        self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] in ("done", "error")))
+        self.assertEqual(self.store.get_job(job["id"])["state"], "done", self.store.get_job(job["id"])["error"])
+        self.assertEqual(calls[0][:2], ("mistral", "mk"))
+        self.assertEqual(calls[0][3:], ("nl", ("Ownkey",)))
+        passages = self.store.list_passages(meeting["id"])
+        self.assertEqual(len(passages), 1)
+        self.assertEqual((passages[0]["text"], passages[0]["quality"], passages[0]["tokens"]), ("Hallo daar, dit is de cloud.", "window", None))
+        self.assertEqual(self.store.get_meeting(meeting["id"])["engine"], "mistral")
+        self.assertIn("Mistral (remote)", self.store.list_events(meeting["id"])[-1]["detail"])
+        self.assertEqual(self.transcriber.decoded, 0, "Orukeet was not used")
+        # A remembered policy lets Stop queue the upload on its own.
+        self.service.set_policy("transcription", "allow")
+        meeting = self.record()
+        self.service.stop()
+        self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
+        self.cfg["meetings_audio_api_key"] = ""
+        with self.assertRaises(MeetingError) as missing:
+            self.service.transcribe(meeting["id"])
+        self.assertIn("not set up", str(missing.exception))
+
     def test_interrupted_source_notifies_and_transcription_can_run_later(self):
         meeting = self.record()
         self.sources[SYSTEM].fail("Speakers disappeared")

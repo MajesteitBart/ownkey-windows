@@ -156,10 +156,17 @@ DEFAULT_CONFIG = {
     # and speaker labels through pyannoteAI (audio upload policy, key, auto-run).
     "meetings_remote_policy": "ask",
     "meetings_upload_policy": "ask",
+    "meetings_transcription_policy": "ask",
     "meetings_auto_summary": False,
     "meetings_auto_speakers": False,
     "meetings_retention": "days7",
     "pyannote_api_key": "",
+    # Meeting transcription: "same" follows the dictation provider; otherwise
+    # any audio provider with its own key, endpoint and model.
+    "meetings_audio_provider": "same",
+    "meetings_audio_api_key": "",
+    "meetings_audio_endpoint": "",
+    "meetings_audio_model": "",
 }
 
 MEETING_RETENTION_LABELS = {
@@ -479,6 +486,15 @@ def load_config() -> dict:
     cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
     cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
     cfg["meetings_upload_policy"] = "allow" if cfg.get("meetings_upload_policy") == "allow" else "ask"
+    cfg["meetings_transcription_policy"] = "allow" if cfg.get("meetings_transcription_policy") == "allow" else "ask"
+    choice = str(cfg.get("meetings_audio_provider") or "same").strip().lower()
+    if choice != "same":
+        choice = normalize_provider(choice, "same")
+        if choice not in AUDIO_PROVIDER_IDS:
+            choice = "same"
+    cfg["meetings_audio_provider"] = choice
+    for key in ("meetings_audio_api_key", "meetings_audio_endpoint", "meetings_audio_model"):
+        cfg[key] = str(cfg.get(key) or "").strip()
     cfg["meetings_auto_summary"] = bool(cfg.get("meetings_auto_summary", False))
     cfg["meetings_auto_speakers"] = bool(cfg.get("meetings_auto_speakers", False))
     if cfg.get("meetings_retention") not in MEETING_RETENTION_LABELS:
@@ -1694,14 +1710,27 @@ class SettingsWindow:
         self._toggle(self._row(card, "Start at login", "Ownkey waits in the tray when you sign in.", last=True), v_startup).pack()
 
         # ---- provider controls (shared) ------------------------------
-        def build_provider_controls(parent, activity, provider_ids):
-            prefix = "audio" if activity == "audio" else "rewrite"
-            provider_value = normalize_provider(cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"]))
+        def build_provider_controls(parent, activity, provider_ids, *, prefix=None, first_label=None, first_value=None):
+            """Provider combo plus key, endpoint and model fields.
+
+            ``first_label``/``first_value`` add a leading choice that is not a
+            provider (Meetings uses "Same as dictation"); the remote fields
+            hide for that choice and for the local model."""
+            prefix = prefix or ("audio" if activity == "audio" else "rewrite")
+            raw_value = str(cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"]) or "")
+            if first_value is not None and raw_value == first_value:
+                provider_value = first_value
+                endpoint_provider = normalize_provider(cfg.get("audio_provider", DEFAULT_CONFIG["audio_provider"]))
+            else:
+                provider_value = normalize_provider(raw_value)
+                endpoint_provider = provider_value
             labels = provider_labels(provider_ids)
+            if first_label is not None:
+                labels = (first_label,) + tuple(labels)
 
             provider_field = self._field(parent, "Provider")
             v_provider, c_provider = self._combo(provider_field.control, labels)
-            v_provider.set(provider_label(provider_value))
+            v_provider.set(first_label if provider_value == first_value else provider_label(provider_value))
             c_provider.pack(fill="x")
 
             remote = tk.Frame(parent, bg=parent.cget("bg"))
@@ -1712,7 +1741,7 @@ class SettingsWindow:
             e_api_key.insert(0, cfg.get(f"{prefix}_api_key", ""))
 
             endpoint_field = self._field(remote, "Endpoint")
-            v_endpoint, c_endpoint = self._combo(endpoint_field.control, provider_endpoints(provider_value, activity), "normal")
+            v_endpoint, c_endpoint = self._combo(endpoint_field.control, provider_endpoints(endpoint_provider, activity), "normal")
             v_endpoint.set(cfg.get(f"{prefix}_endpoint", DEFAULT_CONFIG[f"{prefix}_endpoint"]))
             c_endpoint.pack(fill="x")
 
@@ -1724,10 +1753,22 @@ class SettingsWindow:
             refresh_button.pack(side="left", padx=(8, 0))
 
             def selected_provider():
-                return normalize_provider(v_provider.get(), provider_value)
+                if first_label is not None and v_provider.get() == first_label:
+                    return first_value
+                return normalize_provider(v_provider.get(), provider_value if provider_value != first_value else "openai")
+
+            def sync_visibility():
+                """Key, endpoint and model only matter for a cloud provider."""
+                if selected_provider() in (first_value, "orukeet"):
+                    remote.pack_forget()
+                else:
+                    remote.pack(fill="x", after=provider_field)
 
             def on_provider_change(_event=None):
                 provider_id = selected_provider()
+                if provider_id == first_value:
+                    sync_visibility()
+                    return
                 endpoints = provider_endpoints(provider_id, activity)
                 c_endpoint.configure(values=endpoints)
                 v_endpoint.set(default_endpoint(provider_id, activity))
@@ -1736,8 +1777,10 @@ class SettingsWindow:
                 e_api_key.delete(0, tk.END)
                 v_model.set(MODEL_ID if provider_id == "orukeet" else "")
                 c_model.configure(values=())
-                if activity == "audio":
+                if prefix == "audio":
                     update_local_visibility()
+                else:
+                    sync_visibility()
 
             def fetch_models():
                 provider_id = selected_provider()
@@ -1778,6 +1821,8 @@ class SettingsWindow:
 
             c_provider.bind("<<ComboboxSelected>>", on_provider_change)
             refresh_button.configure(command=fetch_models)
+            if prefix != "audio":
+                sync_visibility()
             return {
                 "provider": v_provider,
                 "api_key": e_api_key,
@@ -1785,6 +1830,7 @@ class SettingsWindow:
                 "model": v_model,
                 "remote": remote,
                 "provider_field": provider_field,
+                "selected": selected_provider,
             }
 
         # ---- Transcription ------------------------------------------
@@ -2159,6 +2205,17 @@ class SettingsWindow:
         # ---- meetings page --------------------------------------------
         page = self.pages["meetings"]
         card = self._card(page).inner
+        self._heading(card, "Transcription", "Same choices as dictation")
+        tk.Label(card, text="Meetings are transcribed after Stop, in windows of up to 28 seconds. Same as dictation follows "
+                 "the provider in Transcription. Orukeet keeps the audio on this PC and returns word timing; a cloud "
+                 "provider receives the audio windows over your own key, returns text per window, and asks before the "
+                 "first upload.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
+        meeting_audio_controls = build_provider_controls(
+            card, "audio", AUDIO_PROVIDER_IDS, prefix="meetings_audio", first_label="Same as dictation", first_value="same")
+
+        card = self._card(page).inner
         self._heading(card, "Speaker labels", "pyannoteAI · remote")
         tk.Label(card, text="Who said what, from pyannoteAI's hosted diarization. The call audio track is uploaded "
                  "for that step only; the transcript and your notes never are. Uploads are deleted within 48 hours "
@@ -2238,6 +2295,19 @@ class SettingsWindow:
             new_cfg["remove_fillers"] = v_remove_fillers.get()
             new_cfg["filler_languages"] = [code for code, var in v_filler_languages.items() if var.get()]
             new_cfg["custom_fillers"] = ", ".join(normalize_vocabulary(e_custom_fillers.value()))
+            meeting_provider = meeting_audio_controls["selected"]()
+            new_cfg["meetings_audio_provider"] = meeting_provider
+            new_cfg["meetings_audio_api_key"] = meeting_audio_controls["api_key"].get().strip()
+            new_cfg["meetings_audio_endpoint"] = meeting_audio_controls["endpoint"].get().strip()
+            new_cfg["meetings_audio_model"] = meeting_audio_controls["model"].get().strip()
+            if meeting_provider in ("same", "orukeet"):
+                new_cfg["meetings_audio_api_key"] = ""
+                new_cfg["meetings_audio_endpoint"] = ""
+                new_cfg["meetings_audio_model"] = MODEL_ID if meeting_provider == "orukeet" else ""
+            elif not new_cfg["meetings_audio_endpoint"] or not new_cfg["meetings_audio_model"]:
+                messagebox.showwarning(APP_NAME, "Choose an endpoint and model for meeting transcription before saving.", parent=win)
+                self.show_page("meetings")
+                return
             new_cfg["pyannote_api_key"] = e_pyannote.value().strip()
             new_cfg["meetings_auto_speakers"] = v_auto_speakers.get()
             new_cfg["meetings_auto_summary"] = v_auto_summary.get()
@@ -2395,7 +2465,7 @@ class OwnkeyApp:
             self.meetings = MeetingService(
                 MeetingStore(), get_config=lambda: self.cfg, set_config=self._meeting_config_changed,
                 local_models=self.local_models, local_transcriber=self.local_transcriber,
-                get_rewrite_key=get_rewrite_api_key, notify=self._notify_error,
+                get_rewrite_key=get_rewrite_api_key, get_audio_key=get_effective_api_key, notify=self._notify_error,
                 open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
             )
             self.meeting_server = MeetingServer(self.meetings)

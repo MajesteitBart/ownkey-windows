@@ -39,6 +39,7 @@
   const fmtBytes = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.round(n / 1e3)} KB`;
   const meter = (level, total = 10) => { let s = ''; const on = Math.round((level || 0) * total); for (let i = 0; i < total; i++) s += `<i class="${i < on ? (i >= total - 1 ? 'hot' : 'on') : ''}"></i>`; return `<span class="meter">${s}</span>`; };
   const SOURCE = { mic: { label: 'Microphone', icon: 'mic' }, system: { label: 'Call audio', icon: 'volume' } };
+  const ENGINE = { orukeet: 'Orukeet · local', openai: 'OpenAI · remote', mistral: 'Mistral · remote', google: 'Google · remote', custom: 'Custom endpoint' };
 
   // ── api ──────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -84,7 +85,7 @@
   }
   function consentDialog(consent) {
     const policyKey = consent.policy_key || 'remote';
-    const upload = consent.kind === 'upload';
+    const upload = consent.kind === 'upload' || consent.kind === 'transcribe';
     return new Promise((resolve) => {
       const d = dialog(`<div class="mh"><span class="eyebrow">${upload ? 'Before the first audio upload' : 'Before the first remote analysis'}</span>
         <h2>${esc(consent.title || `Ownkey will send meeting text to ${consent.provider}`)}</h2>
@@ -95,7 +96,7 @@
           <dt>Not sent</dt><dd>${(consent.not_sent || []).map((s) => `<span class="pill green">${esc(s)}</span>`).join('')}</dd>
         </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${esc(consent.provider)}</label></div>
         ${consent.retention ? `<p class="hint" style="margin-top:8px">${esc(consent.retention)}</p>` : ''}</div>
-        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
+        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${consent.kind === 'transcribe' ? 'Upload and transcribe' : upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
       $('[data-no]', d.root).onclick = () => { d.close(); resolve(false); };
       $('[data-yes]', d.root).onclick = async () => {
         const remember = $('[data-remember]', d.root).checked;
@@ -166,7 +167,7 @@
   function renderNew() {
     const status = state.status || {};
     const f = state.form, d = state.devices || { inputs: [], outputs: [], note: 'Loading devices…' };
-    const model = status.local_model || {}, text = status.text_model || {};
+    const model = status.local_model || {}, text = status.text_model || {}, engine = status.transcriber || {};
     const options = (list, selected, defaultLabel) => `<option value="">${esc(defaultLabel)}</option>` + list.map((x) => `<option value="${esc(x.id)}" ${String(x.id) === String(selected) ? 'selected' : ''}>${esc(x.name)}${x.default ? ' (default)' : ''}</option>`).join('');
     const retention = [['days7', 'Keep audio 7 days after transcription', 'Default. Text stays until you delete the meeting; citations keep working after the audio is gone.'], ['keep', 'Keep audio until I delete the meeting', ''], ['after_transcription', 'Remove audio as soon as transcription succeeds', 'Interrupted or failed jobs keep their audio until they finish.']];
     return `<div class="doc-scroll"><div class="sheet">
@@ -191,7 +192,9 @@
         ${d.note ? `<p class="hint" style="margin-top:8px">${esc(d.note)}</p>` : ''}
       </section>
       <section><span class="eyebrow">Readiness</span><div class="card card-pad" style="padding-top:2px;padding-bottom:2px">
-        <div class="row"><span class="l">${ico('cpu', 15)}Transcription · Orukeet on this PC</span><span class="v">${model.installed ? '<span class="pill green">Installed</span><span class="meta">runs after Stop</span>' : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>'}</span></div>
+        <div class="row"><span class="l">${ico('cpu', 15)}Transcription · ${esc(engine.label || 'Orukeet')}${engine.model ? ` · ${esc(engine.model)}` : ' on this PC'}${engine.follows_dictation ? ' <span class="ink-3">(same as dictation)</span>' : ''}</span><span class="v">${engine.kind === 'cloud'
+          ? (engine.configured ? `<span class="pill ${engine.remote ? 'amber' : 'green'}">${engine.remote ? 'Remote' : 'Local endpoint'}</span><span class="meta">${engine.remote ? (status.transcription_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : 'runs after Stop'}</span>` : '<span class="pill amber">Not configured</span><span class="meta">Settings › Meetings</span>')
+          : (model.installed ? '<span class="pill green">Installed</span><span class="meta">runs after Stop</span>' : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>')}</span></div>
         <div class="row"><span class="l">${ico('sparkle', 15)}Summary and questions · ${esc(text.label || text.provider || 'no provider')}${text.model ? ` · ${esc(text.model)}` : ''}</span><span class="v">${text.configured ? `<span class="pill ${text.remote ? 'amber' : 'green'}">${text.remote ? 'Remote' : 'Local'}</span>` : '<span class="pill">Not configured</span>'}<span class="meta">${text.remote ? (status.remote_policy === 'allow' ? 'allowed' : 'asks before first use') : ''}</span></span></div>
         <div class="row"><span class="l">${ico('users', 15)}Speaker labels · pyannoteAI ${esc((status.speaker_labels || {}).model || '')}</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill amber">Remote</span>' : '<span class="pill">No key</span>'}<span class="meta">${(status.speaker_labels || {}).configured ? (status.upload_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : 'Settings › Meetings'}</span></span></div>
         <div class="row"><span class="l">${ico('lock', 15)}Library</span><span class="v"><span class="meta mono">${esc(status.library ? status.library.root : '')}</span></span></div>
@@ -254,7 +257,7 @@
     return `${cap ? renderRecBar(cap) : ''}
       <div class="mt-head"><h1 class="mt-title"><input data-rename value="${esc(m.title)}" placeholder="Untitled meeting" spellcheck="false"></h1>
         <div class="mt-meta"><span class="mono tnum">${fmt(cap ? cap.elapsed : m.elapsed)}</span><span class="sep"></span><span>${esc(fmtDate(m.created_at))}</span><span class="sep"></span><span>${esc(sources)}</span><span class="sep"></span>
-          ${m.state === 'interrupted' ? '<span class="pill amber">Interrupted</span>' : ''}${m.audio_state === 'removed' ? '<span class="pill">Audio removed</span>' : `<span title="Retention: ${esc(m.retention)}">${ico('cpu', 13)} Orukeet · local</span>`}</div>
+          ${m.state === 'interrupted' ? '<span class="pill amber">Interrupted</span>' : ''}${m.audio_state === 'removed' ? '<span class="pill">Audio removed</span>' : `<span title="Retention: ${esc(m.retention)}">${ico('cpu', 13)} ${esc(ENGINE[m.engine] || (d.passages.length ? m.engine : ((state.status || {}).transcriber || {}).label || 'Orukeet'))}</span>`}</div>
         <div class="doc-tabs">${tabs.map(([key, icon, label, badge]) => `<button class="doc-tab ${state.tab === key ? 'is-active' : ''}" data-tab="${key}">${ico(icon, 14)}${label}${badge}</button>`).join('')}<span class="grow"></span>
           <span class="tools"><button class="icon-btn" data-export="md" title="Export as Markdown">${ico('download', 15)}</button><button class="icon-btn" data-more title="More">${ico('more', 15)}</button></span></div></div>
       <div class="doc-scroll" id="doc"><div class="doc">${renderBanners()}${state.tab === 'thoughts' ? renderNotes() : state.tab === 'transcript' ? renderTranscript(names) : renderSummary(names)}</div></div>
@@ -271,7 +274,8 @@
     const d = state.detail, m = d.meeting, out = [];
     const tj = runningJob('transcribe'), sj = runningJob('summary'), dj = runningJob('draft');
     if (m.state === 'interrupted' && m.audio_state === 'kept' && !tj) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>This recording was interrupted.</b><p>${esc((d.events.filter((e) => e.kind === 'interrupted').pop() || {}).detail || 'Ownkey stopped capturing.')} ${fmt(m.elapsed)} of audio and your notes are saved. Nothing resumed on its own.</p></div><div class="acts"><button class="btn primary xs" data-transcribe>${ico('play', 12)}Transcribe now</button></div></div>`);
-    if (tj) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">Transcribing on this PC</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
+    const engine = (state.status || {}).transcriber || {};
+    if (tj) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">${engine.kind === 'cloud' ? `Transcribing with ${esc(engine.label)}${engine.remote ? ' (remote)' : ''}` : 'Transcribing on this PC'}</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
     const failed = ['transcribe', 'speakers', 'summary', 'draft'].map(lastJob).filter((j) => j && j.state === 'error'
       && (j.kind === 'transcribe' || (j.kind === 'speakers' && state.tab === 'transcript') || ((j.kind === 'summary' || j.kind === 'draft') && state.tab === 'summary')));
     const names = { transcribe: 'Transcription', speakers: 'Speaker labelling', summary: 'Summary', draft: 'Draft' };
@@ -279,7 +283,7 @@
     const pj = runningJob('speakers');
     if (pj && state.tab === 'transcript') out.push(`<div class="banner neutral">${ico('users', 16)}<div class="body"><b><span class="shimmer">Labelling speakers with pyannoteAI</span></b><p>${esc(pj.detail || '')} · the track was uploaded for this step only.</p></div></div>`);
     if (sj || dj) out.push(`<div class="banner neutral">${ico('sparkle', 16)}<div class="body"><b><span class="shimmer">${sj ? 'Generating the summary' : 'Drafting the follow-up'}</span></b><p>${esc((sj || dj).detail || '')}</p></div></div>`);
-    if (!live() && m.state === 'stopped' && !d.passages.length && !tj && !failed.length && m.audio_state === 'kept') out.push(`<div class="banner neutral">${ico('info', 16)}<div class="body"><b>Not transcribed yet.</b><p>Orukeet transcribes on this PC; nothing is uploaded.</p></div><div class="acts"><button class="btn secondary xs" data-transcribe>${ico('play', 12)}Transcribe</button></div></div>`);
+    if (!live() && m.state === 'stopped' && !d.passages.length && !tj && !failed.length && m.audio_state === 'kept') out.push(`<div class="banner neutral">${ico('info', 16)}<div class="body"><b>Not transcribed yet.</b><p>${engine.kind === 'cloud' ? `Transcribing sends the audio to ${esc(engine.label)}${engine.remote ? '; Ownkey asks first' : ' on your local endpoint'}.` : 'Orukeet transcribes on this PC; nothing is uploaded.'}</p></div><div class="acts"><button class="btn secondary xs" data-transcribe>${ico('play', 12)}Transcribe</button></div></div>`);
     return out.join('');
   }
   function renderNotes() {
@@ -359,8 +363,14 @@
     const on = (sel, fn) => $$(sel).forEach((b) => b.onclick = fn);
     on('[data-pause]', () => post(`/api/meetings/${id}/pause`).then(tick).catch((e) => toast(e.message)));
     on('[data-resume]', () => post(`/api/meetings/${id}/resume`).then(tick).catch((e) => toast(e.message)));
-    on('[data-stop]', () => post(`/api/meetings/${id}/stop`).then(() => { toast('Recording stopped. Transcribing on this PC.', 'ok'); return tick(); }).catch((e) => toast(e.message)));
-    on('[data-transcribe]', () => post(`/api/meetings/${id}/transcribe`).then(tick).catch((e) => toast(e.message)));
+    const transcribe = () => withConsent((ok) => post(`/api/meetings/${id}/transcribe`, { remote_ok: ok })).then((r) => r && tick()).catch((e) => toast(e.message));
+    on('[data-stop]', () => post(`/api/meetings/${id}/stop`).then(async () => {
+      toast('Recording stopped.', 'ok', 2500);
+      await tick();
+      // a cloud engine that still needs the user's go-ahead has no job yet: ask now
+      if (state.meetingId === id && !runningJob('transcribe') && !(state.detail && state.detail.passages.length)) transcribe();
+    }).catch((e) => toast(e.message)));
+    on('[data-transcribe]', transcribe);
     on('[data-speakers]', (e) => {
       const m = state.detail.meeting;
       const has = (k) => !!(m.sources && m.sources[k]);

@@ -134,7 +134,9 @@ class ConfigTests(unittest.TestCase):
             path = os.path.join(directory, "config.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump({"meetings_remote_policy": "always", "meetings_auto_summary": "yes", "meetings_retention": "forever",
-                           "meetings_upload_policy": "allow", "pyannote_api_key": " pk-1 ", "meetings_auto_speakers": 1}, handle)
+                           "meetings_upload_policy": "allow", "pyannote_api_key": " pk-1 ", "meetings_auto_speakers": 1,
+                           "meetings_audio_provider": "OpenAI", "meetings_audio_model": " whisper-1 ",
+                           "meetings_transcription_policy": "nope"}, handle)
             with patch.object(ownkey, "CONFIG_FILE", path):
                 cfg = ownkey.load_config()
         self.assertEqual(cfg["meetings_remote_policy"], "ask")
@@ -143,8 +145,18 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg["meetings_auto_speakers"])
         self.assertEqual(cfg["meetings_retention"], "days7")
         self.assertEqual(cfg["pyannote_api_key"], "pk-1")
+        self.assertEqual(cfg["meetings_audio_provider"], "openai")
+        self.assertEqual(cfg["meetings_audio_model"], "whisper-1")
+        self.assertEqual(cfg["meetings_transcription_policy"], "ask")
         self.assertEqual(ownkey.DEFAULT_CONFIG["meetings_remote_policy"], "ask")
         self.assertEqual(ownkey.DEFAULT_CONFIG["pyannote_api_key"], "")
+        self.assertEqual(ownkey.DEFAULT_CONFIG["meetings_audio_provider"], "same")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"meetings_audio_provider": "openrouter"}, handle)  # no audio API: falls back
+            with patch.object(ownkey, "CONFIG_FILE", path):
+                self.assertEqual(ownkey.load_config()["meetings_audio_provider"], "same")
 
     def test_config_changes_from_the_meeting_window_are_saved(self):
         app = make_app()

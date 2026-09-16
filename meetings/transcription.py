@@ -150,7 +150,8 @@ def transcribe_track(samples: np.ndarray, decode, *, source: str, first_index: i
             passage["id"] = f"p{index:04d}"
             passage["source"] = source
             passage["speaker_id"] = source
-            passage["quality"] = "timed" if tokens_have_timing(passage) else "window"
+            # token timing marks a precise passage; a cloud window only knows its bounds
+            passage["quality"] = "timed" if passage.get("tokens") and tokens_have_timing(passage) else "window"
             index += 1
         passages.extend(new)
         if on_progress is not None:
