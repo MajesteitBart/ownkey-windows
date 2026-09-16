@@ -61,14 +61,24 @@ PROVIDER_PRESETS = {
         "rewrite_endpoints": ("http://localhost:1234/v1/chat/completions",),
         "models_endpoint": "http://localhost:1234/v1/models",
     },
+    "orukeet": {
+        "label": "Local (Orukeet)",
+        "local_audio": True,
+        "audio_endpoints": (),
+        "rewrite_endpoints": (),
+        "models_endpoint": "",
+    },
 }
 
 AUDIO_PROVIDER_IDS = tuple(
     provider_id
     for provider_id, preset in PROVIDER_PRESETS.items()
-    if preset["audio_endpoints"]
+    if preset["audio_endpoints"] or preset.get("local_audio", False)
 )
-REWRITE_PROVIDER_IDS = tuple(PROVIDER_PRESETS)
+REWRITE_PROVIDER_IDS = tuple(
+    provider_id for provider_id, preset in PROVIDER_PRESETS.items()
+    if preset["rewrite_endpoints"]
+)
 PROVIDER_LABEL_TO_ID = {
     preset["label"]: provider_id for provider_id, preset in PROVIDER_PRESETS.items()
 }
@@ -153,7 +163,7 @@ def provider_from_endpoint(endpoint: object, fallback: str = "mistral") -> str:
 
 def provider_requires_key(provider: str, endpoint: str = "") -> bool:
     """Return whether Ownkey should block a request when no API key is set."""
-    if normalize_provider(provider) == "custom":
+    if normalize_provider(provider) in {"custom", "orukeet"}:
         return False
     if normalize_provider(provider) != "ollama":
         return True
@@ -236,12 +246,19 @@ def transcribe_audio(
     model: str,
     wav_bytes: bytes,
     language: str = "auto",
+    vocabulary=(),
     *,
     timeout: float = 30,
 ) -> str:
-    """Transcribe WAV bytes through an officially supported provider API."""
+    """Transcribe WAV bytes through an officially supported provider API.
+
+    ``vocabulary`` holds dictionary terms the provider should prefer: OpenAI
+    style endpoints take them as the ``prompt`` field, Mistral as
+    ``context_bias``, and Gemini inside the instruction text.
+    """
+    vocabulary = [str(term).strip() for term in vocabulary or () if str(term).strip()]
     provider_id = normalize_provider(provider)
-    if provider_id not in AUDIO_PROVIDER_IDS:
+    if provider_id not in AUDIO_PROVIDER_IDS or provider_id == "orukeet":
         raise ProviderConfigurationError(
             f"{provider_label(provider_id)} does not provide a supported audio transcription API."
         )
@@ -253,6 +270,10 @@ def transcribe_audio(
         data = {"model": model}
         if language and language != "auto":
             data["language"] = language
+        if vocabulary and provider_id == "mistral":
+            data["context_bias"] = vocabulary
+        elif vocabulary:
+            data["prompt"] = ", ".join(vocabulary)
         response = requests.post(
             endpoint,
             headers=headers,
@@ -268,6 +289,8 @@ def transcribe_audio(
         if not language or language == "auto"
         else f" The expected language is {language}."
     )
+    if vocabulary:
+        language_instruction += " Expected names and terms: " + ", ".join(vocabulary) + "."
     body = {
         "contents": [
             {
@@ -309,7 +332,9 @@ def complete_rewrite(
     timeout: float = 30,
 ) -> str:
     """Run a text rewrite through the selected provider's native API."""
-    provider_id = normalize_provider(provider)
+    provider_id = normalize_provider(provider, fallback="")
+    if provider_id not in REWRITE_PROVIDER_IDS:
+        raise ProviderConfigurationError("This provider does not support rewriting.")
     if not str(model or "").strip():
         raise ProviderConfigurationError("Select a rewrite model in Settings.")
     headers = _auth_headers(provider_id, api_key)
@@ -441,6 +466,11 @@ def list_available_models(
     provider_id = normalize_provider(provider)
     if activity not in {"audio", "rewrite"}:
         raise ProviderConfigurationError(f"Unknown provider activity: {activity}")
+    if provider_id == "orukeet":
+        if activity != "audio":
+            raise ProviderConfigurationError("Orukeet does not support rewriting.")
+        from local_models import MODEL_ID
+        return [MODEL_ID]
     if activity == "audio" and provider_id not in AUDIO_PROVIDER_IDS:
         raise ProviderConfigurationError(
             f"{provider_label(provider_id)} does not provide a supported audio transcription API."

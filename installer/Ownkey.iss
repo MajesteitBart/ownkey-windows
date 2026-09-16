@@ -62,12 +62,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-Source: "{#BackendSourceDir}\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#BackendSourceDir}\*"; DestDir: "{app}\backend"; Excludes: "*.onnx,*.gguf,*.tar.bz2,models\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#OverlaySourceFile}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\ownkey.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\USER_INSTALLATION.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "..\docs\ORUKEET_VALIDATION.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\assets\readme\*.png"; DestDir: "{app}\assets\readme"; Flags: ignoreversion
 
 [Icons]
@@ -76,4 +77,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ModelDirectory: String;
+begin
+  if (CurUninstallStep = usPostUninstall) and not UninstallSilent then
+  begin
+    ModelDirectory := ExpandConstant('{localappdata}\Ownkey\models');
+    if DirExists(ModelDirectory) then
+      if MsgBox('Remove downloaded Ownkey models from ' + ModelDirectory + '?' + #13#10 +
+        'Choose No to keep them for a future installation.', mbConfirmation,
+        MB_YESNO or MB_DEFBUTTON2) = IDYES then
+        DelTree(ModelDirectory, True, True, True);
+  end;
+end;
 

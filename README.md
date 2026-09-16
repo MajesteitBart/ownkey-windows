@@ -27,7 +27,8 @@ Ownkey for Windows is push-to-talk dictation and AI rewrite for the desktop.
 Hold a hotkey, speak, release, and your words are typed into whichever app has
 focus.
 
-You bring the provider and API key. Ownkey has no account, subscription, relay
+Choose a cloud provider with your own API key, or transcribe locally with Orukeet.
+Ownkey has no account, subscription, relay
 server, or telemetry: requests travel directly from your PC to the provider you
 configure.
 
@@ -41,8 +42,10 @@ configure.
 |---|---|---|---|
 | Privacy is the starting point, not a setting to find. | No Ownkey telemetry, account, or hosted service. | Your provider, your account, your control. | MIT-licensed and developed in the open. |
 
-Ownkey does send audio—and selected text when you use rewriting—to your chosen
-AI provider. It does not put an Ownkey-operated server in the middle.
+Cloud transcription sends audio directly to your chosen AI provider. With
+**Local (Orukeet)**, audio stays in memory on your PC. Rewriting sends transcripts,
+selected text, and spoken instructions as text to your configured rewrite provider.
+Fully offline use requires disabling rewriting or using local Ollama.
 
 ## 02 · What it does
 
@@ -52,6 +55,8 @@ AI provider. It does not put an Ownkey-operated server in the middle.
 
 The ready chime is optional. Audio and rewriting can use independent providers,
 keys, endpoints, and models, and Ownkey can start automatically with Windows.
+A personal dictionary and rule-based filler-word removal clean up dictation
+without an AI model.
 
 ## 03 · Get started
 
@@ -74,6 +79,11 @@ py ownkey.py
 Ownkey starts in the system tray. Right-click the tray icon, open **Settings**,
 choose providers for **Audio** and **Rewriting**, enter your API keys, refresh
 the model lists, and save.
+
+For local transcription, choose **Audio > Local (Orukeet)**, click **Download**,
+wait for **Installed**, then click **Save**. The installer includes the CPU runtime;
+the model is a separate, optional download. Installed builds need neither Python
+nor CUDA on the user's PC.
 
 ### Run on Linux (experimental)
 
@@ -179,16 +189,39 @@ reputation.
 Examples of rewrite instructions include “make this more formal”, “translate to
 English”, and “turn this into bullet points”.
 
+### Dictionary and filler words
+
+Settings has a sidebar with five pages: Dictation, Transcription, Dictionary,
+Filler words, and Rewriting.
+
+- **Dictionary words** are passed to the recognizer as hints so it prefers
+  your spelling: Orukeet on this PC (sherpa-onnx hotwords), Mistral
+  (`context_bias`), OpenAI and custom OpenAI-compatible endpoints (`prompt`),
+  and Gemini (in its instruction).
+- **Corrections** replace a misspelling with the spelling you want after
+  transcription, whole words only, ignoring case. They work with every
+  provider. Use them for recurring mistakes such as `own key → Ownkey`.
+- **Filler words** removes clear hesitations such as "uh", "um", and "ehm"
+  with plain text rules before the text is typed, on by default for English and
+  Dutch. Words with meaning such as "like", "well", and "dus" stay. Enabling a
+  language also protects its ordinary words: with Dutch on, the English filler
+  "er" is left alone; with German on, "um" is. Add your own words in the extra
+  words field. Self-corrections such as "Tuesday, no, Thursday" still need
+  auto-rewrite.
+
 ### AI rewrite
 
-- **Auto-rewrite dictation** removes filler words, applies self-corrections,
-  fixes punctuation, and follows your tone, formatting, and custom instructions.
-  If rewriting fails, Ownkey inserts the raw transcript.
+- **Auto-rewrite dictation** applies self-corrections, fixes grammar and
+  punctuation, and follows your tone, formatting, and custom instructions.
+  It runs after the dictionary and filler rules and adds a round trip to the
+  rewrite provider. If rewriting fails, Ownkey inserts the cleaned transcript.
 - **Rewrite selected text** captures the selected text and your spoken
   instruction, sends both to the configured rewrite provider, and replaces the
   selection with the result.
 
 ## 05 · Bring your own key
+
+Local (Orukeet) needs no API key. For cloud transcription:
 
 1. **Get a key** from a supported provider, or configure a compatible endpoint.
 2. **Paste it once** in Settings and choose the model you want to use.
@@ -211,6 +244,7 @@ Audio and rewriting can use different providers and credentials.
 | Ollama | — | Yes, local or cloud | `/api/tags` |
 | OpenRouter | — | Yes, Chat Completions | `/api/v1/models` |
 | Custom (OpenAI-compatible) | Yes, if supported by the server | Yes, Chat Completions or Responses | Derived from the endpoint |
+| Local (Orukeet) | Yes, offline CPU | — | Pinned optional download |
 
 Endpoints and model names remain editable for compatible aliases or custom
 deployments. Ollama presets include local `http://localhost:11434/api/chat` and
@@ -225,6 +259,39 @@ request URL, such as `http://localhost:1234/v1/chat/completions` for rewriting
 or `/v1/audio/transcriptions` for audio. Use `/v1/responses` for servers with
 Responses support. Keep any proxy path prefix in the URL. API keys are optional
 for custom servers. If model discovery is unavailable, enter the model ID manually.
+
+### Local transcription with Orukeet
+
+Orukeet by [Oruk AI](https://huggingface.co/oruk/orukeet), based on NVIDIA
+Parakeet TDT 0.6B v3, detects Dutch, English, and other supported languages
+automatically. Local audio always uses mono 16 kHz. Language selection is disabled.
+
+The pinned INT8 model downloads 487 MB and takes 672 MB on disk. Allow at least
+1.2 GB free during installation. Files live under
+`%LOCALAPPDATA%\Ownkey\models\orukeet\55a984d46f68323301837194ce647c702f55facc`.
+On Linux the models root is `${XDG_CACHE_HOME:-~/.cache}/ownkey/models`;
+local recognition has been validated on Windows only.
+Weights use CC BY-SA 4.0; the download retains `LICENSE-WEIGHTS` and `NOTICE.md`.
+
+Use the folder field or **Browse...** on the Transcription page to choose where to download,
+or select an existing folder containing the extracted model files, including its
+license and notice. Save verifies the files before switching locations. Existing
+recordings finish using their original model. Ownkey does not move or delete the
+old download when you change folders.
+
+Downloading installs files without changing your active provider. Closing Settings
+leaves downloads running. Save validates and loads the model before applying the
+selection. A failed download or Save keeps the previous configuration.
+
+After restart, the model loads on the first hotkey press while audio is buffered.
+It unloads after 20 idle minutes and reloads when needed. Change **Unload after idle**
+on the Transcription page; `0` keeps the model loaded until you switch providers or quit.
+Missing files produce an error and a download action, with no automatic download
+or cloud fallback. To remove a model, switch audio providers, save, then use
+**Remove download**. Uninstalling offers to remove model files and keeps them by
+default, including during silent uninstall.
+Custom model locations are kept when uninstalling. **Remove download** removes
+only the model's known files and preserves unrelated files in the chosen folder.
 
 ## Configuration
 
@@ -244,9 +311,19 @@ treat it as sensitive.
 | Rewrite model | `mistral-small-latest` | Chat model used for rewrites |
 | Rewrite hotkey | `Right Ctrl` | Hold-to-talk rewrite key; can be disabled |
 | Auto-rewrite | Off | Clean every dictation before insertion |
+| `local_model_idle_timeout_minutes` | 20 | Unload local recognition after idle time; `0` disables |
+| `local_model_directory` | Platform model cache | Download folder or existing extracted speech model folder |
+| `vocabulary` | `[]` | Dictionary words passed to the recognizer as hints |
+| `corrections` | `[]` | `{"from": "own key", "to": "Ownkey"}` rules applied after transcription |
+| `remove_fillers` | On | Rule-based removal of hesitations before insertion |
+| `filler_languages` | `["en", "nl"]` | Languages whose fillers are removed (`en`, `nl`, `de`, `fr`, `es`) |
+| `custom_fillers` | empty | Extra comma-separated words to remove |
 
 Older configs using shared `api_key`, `endpoint`, `model`, and `chat_endpoint`
-fields are migrated automatically.
+fields are migrated automatically. The experimental built-in local rewrite LLM
+has been removed. Configs that selected it load with auto-rewrite and the rewrite
+hotkey disabled; choose a rewrite provider in Settings to enable edits again.
+Previously downloaded rewrite weights are left on disk.
 
 ## Development
 
@@ -267,11 +344,20 @@ pnpm install
 pnpm build:binary
 ```
 
-Run the provider tests:
+The settings window is plain tkinter styled by `brand_ui.py` after
+[ownkey.bvdm.ai](https://ownkey.bvdm.ai). It loads the bundled Bricolage
+Grotesque fonts from `assets/fonts` (SIL Open Font License) for this process
+only; nothing is installed system-wide. Dictionary and filler rules live in
+`text_cleanup.py`.
+
+Run the tests:
 
 ```powershell
 py -m unittest discover -s tests
 ```
+
+See [Orukeet validation](docs/ORUKEET_VALIDATION.md) for runtime measurements,
+frozen smoke-test commands, and remaining manual release checks.
 
 Run the Windows signing-pipeline checks:
 

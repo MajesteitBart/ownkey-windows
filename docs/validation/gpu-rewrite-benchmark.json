@@ -1,0 +1,1508 @@
+{
+  "date": "2026-09-16",
+  "runs": [
+    {
+      "gpu": "GTX 1060 6GB",
+      "runtime": "llama.cpp b10985 Vulkan",
+      "gpu_layers_requested": 20,
+      "context": 2048,
+      "temperature": 0.7,
+      "presence_penalty": 0,
+      "models": [
+        {
+          "model": "E:/Development/ownkey-windows/build/rewrite-models/qwen3-1.7b-q4/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf",
+          "gpu_before_mib_used_free": "3378, 2654",
+          "cases": [
+            {
+              "id": "en-cleanup",
+              "language": "en",
+              "input": "Um I think. We should wait... until Friday before we send the proposal to Sophie.",
+              "instruction": "",
+              "output": "Um, I think. We should wait... until Friday before we send the proposal to Sophie.",
+              "seconds": 2.368,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty; repair false sentence boundaries.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 140,
+                "prompt_ms": 1841.427,
+                "prompt_per_token_ms": 13.153049999999999,
+                "prompt_per_second": 76.02799350720936,
+                "predicted_n": 20,
+                "predicted_ms": 507.779,
+                "predicted_per_token_ms": 26.725210526315788,
+                "predicted_per_second": 37.41785304236686
+              }
+            },
+            {
+              "id": "nl-cleanup",
+              "language": "nl",
+              "input": "Eh ik denk. Dat we beter... tot vrijdag kunnen wachten voordat we het voorstel naar Sophie sturen.",
+              "instruction": "",
+              "output": "Eh ik denk. Dat we beter tot vrijdag kunnen wachten voordat we het voorstel naar Sophie sturen.",
+              "seconds": 1.046,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty and natural Dutch; join hesitation breaks.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 39,
+                "prompt_ms": 369.807,
+                "prompt_per_token_ms": 9.48223076923077,
+                "prompt_per_second": 105.46041583853199,
+                "predicted_n": 30,
+                "predicted_ms": 663.29,
+                "predicted_per_token_ms": 22.87206896551724,
+                "predicted_per_second": 43.721449139893565
+              }
+            },
+            {
+              "id": "en-correction",
+              "language": "en",
+              "input": "The meeting is on Tuesday no sorry Thursday at 14:30 with Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "The meeting is on Thursday at 14:30 with Jeroen in Utrecht.",
+              "seconds": 0.625,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to Thursday; do not retain Tuesday.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 32,
+                "prompt_ms": 145.628,
+                "prompt_per_token_ms": 4.550875,
+                "prompt_per_second": 219.73796247974292,
+                "predicted_n": 21,
+                "predicted_ms": 462.411,
+                "predicted_per_token_ms": 23.12055,
+                "predicted_per_second": 43.25156624734273
+              }
+            },
+            {
+              "id": "nl-correction",
+              "language": "nl",
+              "input": "De afspraak is dinsdag nee sorry donderdag om 14:30 met Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "De afspraak is dinsdag, niet donderdag, om 14:30 met Jeroen in Utrecht.",
+              "seconds": 0.745,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to donderdag; do not retain dinsdag.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 37,
+                "prompt_ms": 111.428,
+                "prompt_per_token_ms": 3.0115675675675675,
+                "prompt_per_second": 332.052984887102,
+                "predicted_n": 29,
+                "predicted_ms": 616.607,
+                "predicted_per_token_ms": 22.02167857142857,
+                "predicted_per_second": 45.4097991102923
+              }
+            },
+            {
+              "id": "en-question",
+              "language": "en",
+              "input": "Can you send me the invoice for 127.50 euros before 18 September? I haven't received it yet.",
+              "instruction": "",
+              "output": "Can you send me the invoice for 127.50 euros before 18 September? I haven't received it yet.",
+              "seconds": 0.897,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request; do not answer it or invent facts.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 37,
+                "prompt_ms": 116.898,
+                "prompt_per_token_ms": 3.1594054054054053,
+                "prompt_per_second": 316.51525261338946,
+                "predicted_n": 29,
+                "predicted_ms": 765.281,
+                "predicted_per_token_ms": 27.331464285714283,
+                "predicted_per_second": 36.587867724404504
+              }
+            },
+            {
+              "id": "nl-question",
+              "language": "nl",
+              "input": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "instruction": "",
+              "output": "Kun je de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "seconds": 0.927,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request in Dutch; do not answer it.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 41,
+                "prompt_ms": 125.207,
+                "prompt_per_token_ms": 3.0538292682926826,
+                "prompt_per_second": 327.45772999912145,
+                "predicted_n": 32,
+                "predicted_ms": 786.672,
+                "predicted_per_token_ms": 25.376516129032257,
+                "predicted_per_second": 39.40651249822035
+              }
+            },
+            {
+              "id": "en-negation",
+              "language": "en",
+              "input": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "instruction": "",
+              "output": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "seconds": 0.733,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 31,
+                "prompt_ms": 209.784,
+                "prompt_per_token_ms": 6.767225806451613,
+                "prompt_per_second": 147.77104068947108,
+                "predicted_n": 23,
+                "predicted_ms": 505.747,
+                "predicted_per_token_ms": 22.988500000000002,
+                "predicted_per_second": 43.50001087500272
+              }
+            },
+            {
+              "id": "nl-negation",
+              "language": "nl",
+              "input": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "instruction": "",
+              "output": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "seconds": 0.735,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration in Dutch.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 34,
+                "prompt_ms": 166.924,
+                "prompt_per_token_ms": 4.909529411764706,
+                "prompt_per_second": 203.68550957321895,
+                "predicted_n": 26,
+                "predicted_ms": 550.344,
+                "predicted_per_token_ms": 22.01376,
+                "predicted_per_second": 45.42613347288241
+              }
+            },
+            {
+              "id": "en-selection",
+              "language": "en",
+              "input": "Hi Sophie, I was wondering if you might perhaps have time to review the proposal this week. We need your approval before Friday.",
+              "instruction": "Make this shorter but keep the deadline and friendly tone.",
+              "output": "Hi Sophie, I was wondering if you could review the proposal this week. We need your approval before Friday.",
+              "seconds": 0.886,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction without losing the approval deadline.",
+              "timings": {
+                "cache_n": 3,
+                "prompt_n": 108,
+                "prompt_ms": 263.4,
+                "prompt_per_token_ms": 2.4388888888888887,
+                "prompt_per_second": 410.02277904328025,
+                "predicted_n": 23,
+                "predicted_ms": 594.582,
+                "predicted_per_token_ms": 27.026454545454545,
+                "predicted_per_second": 37.000783743873846
+              }
+            },
+            {
+              "id": "nl-selection",
+              "language": "nl",
+              "input": "Hoi Sophie, ik vroeg me af of je misschien deze week tijd hebt om het voorstel te bekijken. We hebben je akkoord nodig voor vrijdag.",
+              "instruction": "Maak dit korter, maar houd de deadline en de vriendelijke toon.",
+              "output": "Hoi Sophie, ik vroeg me af of je deze week tijd hebt om het voorstel te bekijken. We hebben je akkoord nodig voor vrijdag.",
+              "seconds": 1.084,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction in natural Dutch without losing the deadline.",
+              "timings": {
+                "cache_n": 63,
+                "prompt_n": 69,
+                "prompt_ms": 246.168,
+                "prompt_per_token_ms": 3.567652173913044,
+                "prompt_per_second": 280.2963829579799,
+                "predicted_n": 38,
+                "predicted_ms": 814.237,
+                "predicted_per_token_ms": 22.006405405405406,
+                "predicted_per_second": 45.44131499796743
+              }
+            },
+            {
+              "id": "de-cleanup",
+              "language": "de",
+              "input": "Ähm ich denke. Wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "instruction": "",
+              "output": "Ähm, ich denke. Wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "seconds": 0.739,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep German and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 31,
+                "prompt_ms": 179.888,
+                "prompt_per_token_ms": 5.802838709677419,
+                "prompt_per_second": 172.32944943520414,
+                "predicted_n": 24,
+                "predicted_ms": 531.337,
+                "predicted_per_token_ms": 23.101608695652175,
+                "predicted_per_second": 43.2870287595255
+              }
+            },
+            {
+              "id": "fr-cleanup",
+              "language": "fr",
+              "input": "Euh je pense. Qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "instruction": "",
+              "output": "Euh, je pense qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "seconds": 0.658,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep French and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 32,
+                "prompt_ms": 141.952,
+                "prompt_per_token_ms": 4.436,
+                "prompt_per_second": 225.42831379621282,
+                "predicted_n": 24,
+                "predicted_ms": 495.663,
+                "predicted_per_token_ms": 21.550565217391306,
+                "predicted_per_second": 46.40249524374424
+              }
+            },
+            {
+              "id": "nl-holdout-correction",
+              "language": "nl",
+              "input": "We vertrekken maandag, nee woensdag, naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "instruction": "",
+              "output": "We vertrekken maandag, nee, woensdag, naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "seconds": 0.874,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday; preserve the prohibition on taking the red folder.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 41,
+                "prompt_ms": 114.72,
+                "prompt_per_token_ms": 2.7980487804878047,
+                "prompt_per_second": 357.3919107391911,
+                "predicted_n": 34,
+                "predicted_ms": 743.641,
+                "predicted_per_token_ms": 22.534575757575755,
+                "predicted_per_second": 44.3762514439091
+              }
+            },
+            {
+              "id": "nl-holdout-business",
+              "language": "nl",
+              "input": "Hoi Fatima, eh de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "instruction": "",
+              "output": "Hoi Fatima, eh de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "seconds": 1.318,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep the two amounts, conditional discount and VAT exclusion; remove filler.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 63,
+                "prompt_ms": 116.594,
+                "prompt_per_token_ms": 1.8506984126984125,
+                "prompt_per_second": 540.3365524812598,
+                "predicted_n": 55,
+                "predicted_ms": 1184.498,
+                "predicted_per_token_ms": 21.935148148148148,
+                "predicted_per_second": 45.58893303323433
+              }
+            },
+            {
+              "id": "en-holdout-correction",
+              "language": "en",
+              "input": "We leave on Monday, no Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "instruction": "",
+              "output": "We leave on Monday, not Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "seconds": 0.671,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday and preserve the exclusion of the red folder.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 32,
+                "prompt_ms": 140.64,
+                "prompt_per_token_ms": 4.395,
+                "prompt_per_second": 227.5312855517634,
+                "predicted_n": 24,
+                "predicted_ms": 501.858,
+                "predicted_per_token_ms": 21.819913043478262,
+                "predicted_per_second": 45.82969684651834
+              }
+            },
+            {
+              "id": "nl-holdout-selection",
+              "language": "nl",
+              "input": "Beste Fatima, we hebben helaas geen reactie ontvangen op ons voorstel. Zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zonder akkoord starten we niet.",
+              "instruction": "Maak dit vriendelijker, zonder de deadline of voorwaarde te veranderen.",
+              "output": "Beste Fatima, we hebben helaas geen reactie ontvangen op ons voorstel. Zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zonder akkoord starten we niet.",
+              "seconds": 1.418,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep Dutch, deadline and no-start-without-approval condition while making it friendlier.",
+              "timings": {
+                "cache_n": 63,
+                "prompt_n": 83,
+                "prompt_ms": 263.093,
+                "prompt_per_token_ms": 3.169795180722892,
+                "prompt_per_second": 315.47779682469695,
+                "predicted_n": 53,
+                "predicted_ms": 1124.525,
+                "predicted_per_token_ms": 21.62548076923077,
+                "predicted_per_second": 46.241746515195295
+              }
+            }
+          ],
+          "load_seconds": 4.197,
+          "gpu_loaded_mib_used_free": "4347, 1685",
+          "median_seconds": 0.88,
+          "gpu_after_mib_used_free": "4372, 1660",
+          "runtime_stopped": true
+        }
+      ]
+    },
+    {
+      "gpu": "GTX 1060 6GB",
+      "runtime": "llama.cpp b10985 Vulkan",
+      "gpu_layers_requested": 20,
+      "context": 2048,
+      "temperature": 0.7,
+      "presence_penalty": 0,
+      "models": [
+        {
+          "model": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "gpu_before_mib_used_free": "3795, 2237",
+          "cases": [
+            {
+              "id": "en-cleanup",
+              "language": "en",
+              "input": "Um I think. We should wait... until Friday before we send the proposal to Sophie.",
+              "instruction": "",
+              "output": "I think we should wait until Friday before sending the proposal to Sophie.",
+              "seconds": 2.049,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty; repair false sentence boundaries.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 136,
+                "prompt_ms": 1300.683,
+                "prompt_per_token_ms": 9.563845588235294,
+                "prompt_per_second": 104.56045016349103,
+                "predicted_n": 15,
+                "predicted_ms": 741.47,
+                "predicted_per_token_ms": 52.96214285714286,
+                "predicted_per_second": 18.88141125062376
+              }
+            },
+            {
+              "id": "nl-cleanup",
+              "language": "nl",
+              "input": "Eh ik denk. Dat we beter... tot vrijdag kunnen wachten voordat we het voorstel naar Sophie sturen.",
+              "instruction": "",
+              "output": "I think we should wait until Friday before sending the proposal to Sophie.",
+              "seconds": 1.004,
+              "finish_reason": "stop",
+              "missing_literals": [
+                "vrijdag"
+              ],
+              "review": "Keep uncertainty and natural Dutch; join hesitation breaks.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 35,
+                "prompt_ms": 268.478,
+                "prompt_per_token_ms": 7.6708,
+                "prompt_per_second": 130.3644991395943,
+                "predicted_n": 15,
+                "predicted_ms": 728.844,
+                "predicted_per_token_ms": 52.06028571428572,
+                "predicted_per_second": 19.208500035672927
+              }
+            },
+            {
+              "id": "en-correction",
+              "language": "en",
+              "input": "The meeting is on Tuesday no sorry Thursday at 14:30 with Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "The meeting is on Thursday at 14:30 with Jeroen in Utrecht.",
+              "seconds": 1.514,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to Thursday; do not retain Tuesday.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 28,
+                "prompt_ms": 421.339,
+                "prompt_per_token_ms": 15.047821428571428,
+                "prompt_per_second": 66.454802427499,
+                "predicted_n": 21,
+                "predicted_ms": 1086.156,
+                "predicted_per_token_ms": 54.3078,
+                "predicted_per_second": 18.413561219566986
+              }
+            },
+            {
+              "id": "nl-correction",
+              "language": "nl",
+              "input": "De afspraak is dinsdag nee sorry donderdag om 14:30 met Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "De afspraak is donderdag om 14:30 met Jeroen in Utrecht.",
+              "seconds": 1.418,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to donderdag; do not retain dinsdag.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 33,
+                "prompt_ms": 266.441,
+                "prompt_per_token_ms": 8.073969696969696,
+                "prompt_per_second": 123.85481213476906,
+                "predicted_n": 23,
+                "predicted_ms": 1144.648,
+                "predicted_per_token_ms": 52.02945454545454,
+                "predicted_per_second": 19.219882444209922
+              }
+            },
+            {
+              "id": "en-question",
+              "language": "en",
+              "input": "Can you send me the invoice for 127.50 euros before 18 September? I haven't received it yet.",
+              "instruction": "",
+              "output": "Can you send me the invoice for 127.50 euros before 18 September? I still haven't received it.",
+              "seconds": 1.738,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request; do not answer it or invent facts.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 33,
+                "prompt_ms": 266.794,
+                "prompt_per_token_ms": 8.084666666666665,
+                "prompt_per_second": 123.69093757730684,
+                "predicted_n": 29,
+                "predicted_ms": 1464.865,
+                "predicted_per_token_ms": 52.316607142857144,
+                "predicted_per_second": 19.114389380591383
+              }
+            },
+            {
+              "id": "nl-question",
+              "language": "nl",
+              "input": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "instruction": "",
+              "output": "Kan je mij de factuur van 127,50 euro van 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "seconds": 2.011,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request in Dutch; do not answer it.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 37,
+                "prompt_ms": 267.297,
+                "prompt_per_token_ms": 7.224243243243244,
+                "prompt_per_second": 138.4228030991743,
+                "predicted_n": 33,
+                "predicted_ms": 1737.493,
+                "predicted_per_token_ms": 54.29665625,
+                "predicted_per_second": 18.417340386407314
+              }
+            },
+            {
+              "id": "en-negation",
+              "language": "en",
+              "input": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "instruction": "",
+              "output": "I don't want to cancel the contract. I only want to pause it for two months, not three.",
+              "seconds": 1.653,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 27,
+                "prompt_ms": 422.831,
+                "prompt_per_token_ms": 15.660407407407408,
+                "prompt_per_second": 63.85529916207657,
+                "predicted_n": 23,
+                "predicted_ms": 1223.698,
+                "predicted_per_token_ms": 55.62263636363637,
+                "predicted_per_second": 17.978292029569385
+              }
+            },
+            {
+              "id": "nl-negation",
+              "language": "nl",
+              "input": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "instruction": "",
+              "output": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, niet drie.",
+              "seconds": 2.041,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration in Dutch.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 30,
+                "prompt_ms": 470.622,
+                "prompt_per_token_ms": 15.6874,
+                "prompt_per_second": 63.74542626566544,
+                "predicted_n": 26,
+                "predicted_ms": 1563.565,
+                "predicted_per_token_ms": 62.5426,
+                "predicted_per_second": 15.989101828193903
+              }
+            },
+            {
+              "id": "en-selection",
+              "language": "en",
+              "input": "Hi Sophie, I was wondering if you might perhaps have time to review the proposal this week. We need your approval before Friday.",
+              "instruction": "Make this shorter but keep the deadline and friendly tone.",
+              "output": "Hi Sophie, could you maybe review the proposal this week? We need your approval before Friday.",
+              "seconds": 1.635,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction without losing the approval deadline.",
+              "timings": {
+                "cache_n": 3,
+                "prompt_n": 104,
+                "prompt_ms": 560.046,
+                "prompt_per_token_ms": 5.385057692307693,
+                "prompt_per_second": 185.69903186523962,
+                "predicted_n": 20,
+                "predicted_ms": 1053.99,
+                "predicted_per_token_ms": 55.47315789473684,
+                "predicted_per_second": 18.0267364965512
+              }
+            },
+            {
+              "id": "nl-selection",
+              "language": "nl",
+              "input": "Hoi Sophie, ik vroeg me af of je misschien deze week tijd hebt om het voorstel te bekijken. We hebben je akkoord nodig voor vrijdag.",
+              "instruction": "Maak dit korter, maar houd de deadline en de vriendelijke toon.",
+              "output": "Hoi Sophie, heb je deze week tijd om het voorstel te bekijken? We hebben je akkoord nodig voor vrijdag.",
+              "seconds": 2.153,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction in natural Dutch without losing the deadline.",
+              "timings": {
+                "cache_n": 63,
+                "prompt_n": 65,
+                "prompt_ms": 543.296,
+                "prompt_per_token_ms": 8.358400000000001,
+                "prompt_per_second": 119.64012251148544,
+                "predicted_n": 31,
+                "predicted_ms": 1602.693,
+                "predicted_per_token_ms": 53.4231,
+                "predicted_per_second": 18.718494434055682
+              }
+            },
+            {
+              "id": "de-cleanup",
+              "language": "de",
+              "input": "Ähm ich denke. Wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "instruction": "",
+              "output": "I think we should wait until Friday before sending Sophie the offer.",
+              "seconds": 1.22,
+              "finish_reason": "stop",
+              "missing_literals": [
+                "Freitag"
+              ],
+              "review": "Keep German and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 27,
+                "prompt_ms": 424.83,
+                "prompt_per_token_ms": 15.734444444444444,
+                "prompt_per_second": 63.554833698185156,
+                "predicted_n": 14,
+                "predicted_ms": 774.076,
+                "predicted_per_token_ms": 59.5443076923077,
+                "predicted_per_second": 16.794216588552025
+              }
+            },
+            {
+              "id": "fr-cleanup",
+              "language": "fr",
+              "input": "Euh je pense. Qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "instruction": "",
+              "output": "I think we should wait until Friday before sending the proposal to Sophie.",
+              "seconds": 1.286,
+              "finish_reason": "stop",
+              "missing_literals": [
+                "vendredi"
+              ],
+              "review": "Keep French and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 28,
+                "prompt_ms": 433.055,
+                "prompt_per_token_ms": 15.46625,
+                "prompt_per_second": 64.65691424876748,
+                "predicted_n": 15,
+                "predicted_ms": 846.766,
+                "predicted_per_token_ms": 60.483285714285714,
+                "predicted_per_second": 16.53349331456388
+              }
+            },
+            {
+              "id": "nl-holdout-correction",
+              "language": "nl",
+              "input": "We vertrekken maandag, nee woensdag, naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "instruction": "",
+              "output": "We vertrekken woensdag naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "seconds": 1.697,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday; preserve the prohibition on taking the red folder.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 37,
+                "prompt_ms": 279.69,
+                "prompt_per_token_ms": 7.559189189189189,
+                "prompt_per_second": 132.28932031892452,
+                "predicted_n": 26,
+                "predicted_ms": 1410.663,
+                "predicted_per_token_ms": 56.426520000000004,
+                "predicted_per_second": 17.722163266492423
+              }
+            },
+            {
+              "id": "nl-holdout-business",
+              "language": "nl",
+              "input": "Hoi Fatima, eh de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "instruction": "",
+              "output": "Hoi Fatima, de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "seconds": 3.299,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep the two amounts, conditional discount and VAT exclusion; remove filler.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 59,
+                "prompt_ms": 292.495,
+                "prompt_per_token_ms": 4.957542372881356,
+                "prompt_per_second": 201.71284979230413,
+                "predicted_n": 54,
+                "predicted_ms": 2999.513,
+                "predicted_per_token_ms": 56.594584905660376,
+                "predicted_per_second": 17.669535021185105
+              }
+            },
+            {
+              "id": "en-holdout-correction",
+              "language": "en",
+              "input": "We leave on Monday, no Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "instruction": "",
+              "output": "We leave on Monday, not Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "seconds": 1.849,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday and preserve the exclusion of the red folder.",
+              "timings": {
+                "cache_n": 113,
+                "prompt_n": 28,
+                "prompt_ms": 488.439,
+                "prompt_per_token_ms": 17.44425,
+                "prompt_per_second": 57.32547974260859,
+                "predicted_n": 24,
+                "predicted_ms": 1353.758,
+                "predicted_per_token_ms": 58.85904347826087,
+                "predicted_per_second": 16.989742627559725
+              }
+            },
+            {
+              "id": "nl-holdout-selection",
+              "language": "nl",
+              "input": "Beste Fatima, we hebben helaas geen reactie ontvangen op ons voorstel. Zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zonder akkoord starten we niet.",
+              "instruction": "Maak dit vriendelijker, zonder de deadline of voorwaarde te veranderen.",
+              "output": "Beste Fatima,  \nWe hopen dat je goed is en dat je het voorstel van ons wel eens goed hebt overnemen. We hebben helaas nog geen reactie ontvangen, dus zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zo ja, dan kunnen we verdergaan; zo nee, dan houden we het even in de koker. Zonder akkoord starten we niet.",
+              "seconds": 6.445,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep Dutch, deadline and no-start-without-approval condition while making it friendlier.",
+              "timings": {
+                "cache_n": 66,
+                "prompt_n": 76,
+                "prompt_ms": 562.938,
+                "prompt_per_token_ms": 7.407078947368421,
+                "prompt_per_second": 135.00598644966232,
+                "predicted_n": 100,
+                "predicted_ms": 5862.182,
+                "predicted_per_token_ms": 59.213959595959594,
+                "predicted_per_second": 16.88790965548323
+              }
+            }
+          ],
+          "load_seconds": 2.136,
+          "gpu_loaded_mib_used_free": "5304, 728",
+          "median_seconds": 1.7175,
+          "gpu_after_mib_used_free": "5271, 761",
+          "runtime_stopped": true
+        }
+      ]
+    },
+    {
+      "gpu": "GTX 1060 6GB",
+      "runtime": "llama.cpp b10985 Vulkan",
+      "gpu_layers_requested": 20,
+      "context": 2048,
+      "temperature": 0.7,
+      "presence_penalty": 0,
+      "models": [
+        {
+          "model": "Qwen3.5-4B-Q4_K_M.gguf",
+          "gpu_before_mib_used_free": "3670, 2362",
+          "cases": [
+            {
+              "id": "en-cleanup",
+              "language": "en",
+              "input": "Um I think. We should wait... until Friday before we send the proposal to Sophie.",
+              "instruction": "",
+              "output": "We should wait until Friday before sending the proposal to Sophie.",
+              "seconds": 4.142,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty; repair false sentence boundaries.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 145,
+                "prompt_ms": 3098.762,
+                "prompt_per_token_ms": 21.370772413793105,
+                "prompt_per_second": 46.79288051163658,
+                "predicted_n": 13,
+                "predicted_ms": 1040.697,
+                "predicted_per_token_ms": 86.72474999999999,
+                "predicted_per_second": 11.530733729414038
+              }
+            },
+            {
+              "id": "nl-cleanup",
+              "language": "nl",
+              "input": "Eh ik denk. Dat we beter... tot vrijdag kunnen wachten voordat we het voorstel naar Sophie sturen.",
+              "instruction": "",
+              "output": "Eh, ik denk dat we beter kunnen wachten tot vrijdag voordat we het voorstel naar Sophie sturen.",
+              "seconds": 2.592,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty and natural Dutch; join hesitation breaks.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 35,
+                "prompt_ms": 906.071,
+                "prompt_per_token_ms": 25.887742857142857,
+                "prompt_per_second": 38.628319414262236,
+                "predicted_n": 23,
+                "predicted_ms": 1682.892,
+                "predicted_per_token_ms": 76.4950909090909,
+                "predicted_per_second": 13.072734316878327
+              }
+            },
+            {
+              "id": "en-correction",
+              "language": "en",
+              "input": "The meeting is on Tuesday no sorry Thursday at 14:30 with Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "The meeting is on Thursday at 14:30 with Jeroen in Utrecht.",
+              "seconds": 2.006,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to Thursday; do not retain Tuesday.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 34,
+                "prompt_ms": 726.04,
+                "prompt_per_token_ms": 21.35411764705882,
+                "prompt_per_second": 46.82937579196739,
+                "predicted_n": 20,
+                "predicted_ms": 1274.816,
+                "predicted_per_token_ms": 67.09557894736842,
+                "predicted_per_second": 14.904111652191375
+              }
+            },
+            {
+              "id": "nl-correction",
+              "language": "nl",
+              "input": "De afspraak is dinsdag nee sorry donderdag om 14:30 met Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "De afspraak is dinsdag, nee, sorry, donderdag om 14:30 uur met Jeroen in Utrecht.",
+              "seconds": 2.434,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to donderdag; do not retain dinsdag.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 37,
+                "prompt_ms": 582.347,
+                "prompt_per_token_ms": 15.739108108108107,
+                "prompt_per_second": 63.53600173092675,
+                "predicted_n": 30,
+                "predicted_ms": 1848.375,
+                "predicted_per_token_ms": 63.73706896551724,
+                "predicted_per_second": 15.689456955433826
+              }
+            },
+            {
+              "id": "en-question",
+              "language": "en",
+              "input": "Can you send me the invoice for 127.50 euros before 18 September? I haven't received it yet.",
+              "instruction": "",
+              "output": "Can you send me the invoice for 127.50 euros before September 18? I haven't received it yet.",
+              "seconds": 2.164,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request; do not answer it or invent facts.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 40,
+                "prompt_ms": 403.008,
+                "prompt_per_token_ms": 10.075199999999999,
+                "prompt_per_second": 99.25361283150707,
+                "predicted_n": 29,
+                "predicted_ms": 1758.909,
+                "predicted_per_token_ms": 62.818178571428575,
+                "predicted_per_second": 15.918958854608167
+              }
+            },
+            {
+              "id": "nl-question",
+              "language": "nl",
+              "input": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "instruction": "",
+              "output": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb deze nog niet ontvangen.",
+              "seconds": 2.31,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request in Dutch; do not answer it.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 43,
+                "prompt_ms": 430.121,
+                "prompt_per_token_ms": 10.002813953488372,
+                "prompt_per_second": 99.97186838122296,
+                "predicted_n": 32,
+                "predicted_ms": 1876.886,
+                "predicted_per_token_ms": 60.544709677419355,
+                "predicted_per_second": 16.516719715528808
+              }
+            },
+            {
+              "id": "en-negation",
+              "language": "en",
+              "input": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "instruction": "",
+              "output": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "seconds": 1.899,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 34,
+                "prompt_ms": 594.381,
+                "prompt_per_token_ms": 17.48179411764706,
+                "prompt_per_second": 57.20236683204881,
+                "predicted_n": 23,
+                "predicted_ms": 1301.602,
+                "predicted_per_token_ms": 59.16372727272728,
+                "predicted_per_second": 16.902248152661105
+              }
+            },
+            {
+              "id": "nl-negation",
+              "language": "nl",
+              "input": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "instruction": "",
+              "output": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "seconds": 1.972,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration in Dutch.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 34,
+                "prompt_ms": 630.126,
+                "prompt_per_token_ms": 18.533117647058823,
+                "prompt_per_second": 53.95746247575882,
+                "predicted_n": 23,
+                "predicted_ms": 1338.641,
+                "predicted_per_token_ms": 60.84731818181819,
+                "predicted_per_second": 16.434578053413873
+              }
+            },
+            {
+              "id": "en-selection",
+              "language": "en",
+              "input": "Hi Sophie, I was wondering if you might perhaps have time to review the proposal this week. We need your approval before Friday.",
+              "instruction": "Make this shorter but keep the deadline and friendly tone.",
+              "output": "Hi Sophie, could you please review the proposal this week? We need approval by Friday.",
+              "seconds": 1.842,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction without losing the approval deadline.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 113,
+                "prompt_ms": 700.688,
+                "prompt_per_token_ms": 6.2007787610619465,
+                "prompt_per_second": 161.27006599228187,
+                "predicted_n": 19,
+                "predicted_ms": 1095.491,
+                "predicted_per_token_ms": 60.86061111111111,
+                "predicted_per_second": 16.430988479138577
+              }
+            },
+            {
+              "id": "nl-selection",
+              "language": "nl",
+              "input": "Hoi Sophie, ik vroeg me af of je misschien deze week tijd hebt om het voorstel te bekijken. We hebben je akkoord nodig voor vrijdag.",
+              "instruction": "Maak dit korter, maar houd de deadline en de vriendelijke toon.",
+              "output": "Hoi Sophie, heb je deze week tijd voor het voorstel? Je akkoord is nodig voor vrijdag.",
+              "seconds": 1.859,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction in natural Dutch without losing the deadline.",
+              "timings": {
+                "cache_n": 58,
+                "prompt_n": 65,
+                "prompt_ms": 427.824,
+                "prompt_per_token_ms": 6.581907692307692,
+                "prompt_per_second": 151.93163543887206,
+                "predicted_n": 23,
+                "predicted_ms": 1381.006,
+                "predicted_per_token_ms": 62.773,
+                "predicted_per_second": 15.930415943160275
+              }
+            },
+            {
+              "id": "de-cleanup",
+              "language": "de",
+              "input": "Ähm ich denke. Wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "instruction": "",
+              "output": "Äh, ich denke, wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "seconds": 1.703,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep German and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 30,
+                "prompt_ms": 554.206,
+                "prompt_per_token_ms": 18.473533333333332,
+                "prompt_per_second": 54.13149623064348,
+                "predicted_n": 20,
+                "predicted_ms": 1091.061,
+                "predicted_per_token_ms": 57.424263157894735,
+                "predicted_per_second": 17.414241733505275
+              }
+            },
+            {
+              "id": "fr-cleanup",
+              "language": "fr",
+              "input": "Euh je pense. Qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "instruction": "",
+              "output": "Je pense qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "seconds": 1.522,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep French and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 32,
+                "prompt_ms": 584.493,
+                "prompt_per_token_ms": 18.26540625,
+                "prompt_per_second": 54.74830323032097,
+                "predicted_n": 18,
+                "predicted_ms": 934.772,
+                "predicted_per_token_ms": 54.98658823529412,
+                "predicted_per_second": 18.186252904451568
+              }
+            },
+            {
+              "id": "nl-holdout-correction",
+              "language": "nl",
+              "input": "We vertrekken maandag, nee woensdag, naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "instruction": "",
+              "output": "We vertrekken maandag naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "seconds": 1.622,
+              "finish_reason": "stop",
+              "missing_literals": [
+                "woensdag"
+              ],
+              "review": "Keep only Wednesday; preserve the prohibition on taking the red folder.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 41,
+                "prompt_ms": 396.887,
+                "prompt_per_token_ms": 9.680170731707317,
+                "prompt_per_second": 103.30396309276948,
+                "predicted_n": 23,
+                "predicted_ms": 1222.35,
+                "predicted_per_token_ms": 55.56136363636363,
+                "predicted_per_second": 17.998118378533153
+              }
+            },
+            {
+              "id": "nl-holdout-business",
+              "language": "nl",
+              "input": "Hoi Fatima, eh de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "instruction": "",
+              "output": "Hoi Fatima, de offerte is 1.250 euro, exclusief btw. De korting geldt alleen als je vóór 30 september akkoord geeft; anders blijft het bedrag 1.400 euro.",
+              "seconds": 3.221,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep the two amounts, conditional discount and VAT exclusion; remove filler.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 60,
+                "prompt_ms": 400.832,
+                "prompt_per_token_ms": 6.680533333333333,
+                "prompt_per_second": 149.688647612965,
+                "predicted_n": 51,
+                "predicted_ms": 2817.819,
+                "predicted_per_token_ms": 56.35638,
+                "predicted_per_second": 17.744219909085714
+              }
+            },
+            {
+              "id": "en-holdout-correction",
+              "language": "en",
+              "input": "We leave on Monday, no Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "instruction": "",
+              "output": "We leave on Monday, not Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "seconds": 2.009,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday and preserve the exclusion of the red folder.",
+              "timings": {
+                "cache_n": 115,
+                "prompt_n": 35,
+                "prompt_ms": 615.286,
+                "prompt_per_token_ms": 17.5796,
+                "prompt_per_second": 56.88411567953765,
+                "predicted_n": 24,
+                "predicted_ms": 1391.061,
+                "predicted_per_token_ms": 60.48091304347826,
+                "predicted_per_second": 16.53414192476103
+              }
+            },
+            {
+              "id": "nl-holdout-selection",
+              "language": "nl",
+              "input": "Beste Fatima, we hebben helaas geen reactie ontvangen op ons voorstel. Zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zonder akkoord starten we niet.",
+              "instruction": "Maak dit vriendelijker, zonder de deadline of voorwaarde te veranderen.",
+              "output": "Beste Fatima, helaas hebben we nog geen reactie op ons voorstel ontvangen. Kunnen we er even mee werken dat je tot 30 september aangeeft of je akkoord gaat? Zonder akkoord starten we niet.",
+              "seconds": 3.535,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep Dutch, deadline and no-start-without-approval condition while making it friendlier.",
+              "timings": {
+                "cache_n": 58,
+                "prompt_n": 80,
+                "prompt_ms": 718.167,
+                "prompt_per_token_ms": 8.9770875,
+                "prompt_per_second": 111.39470346033721,
+                "predicted_n": 51,
+                "predicted_ms": 2756.598,
+                "predicted_per_token_ms": 55.13196,
+                "predicted_per_second": 18.138299454617613
+              }
+            }
+          ],
+          "load_seconds": 2.919,
+          "gpu_loaded_mib_used_free": "5335, 697",
+          "median_seconds": 2.0075,
+          "gpu_after_mib_used_free": "5323, 709",
+          "runtime_stopped": true
+        }
+      ]
+    },
+    {
+      "gpu": "GTX 1060 6GB",
+      "runtime": "llama.cpp b10985 Vulkan",
+      "gpu_layers_requested": 20,
+      "context": 2048,
+      "prompt": "cloud",
+      "temperature": 0.7,
+      "presence_penalty": 0,
+      "models": [
+        {
+          "model": "Qwen3.5-4B-Q4_K_M.gguf",
+          "gpu_before_mib_used_free": "3612, 2420",
+          "cases": [
+            {
+              "id": "en-cleanup",
+              "language": "en",
+              "input": "Um I think. We should wait... until Friday before we send the proposal to Sophie.",
+              "instruction": "",
+              "output": "We should wait until Friday before we send the proposal to Sophie.",
+              "seconds": 3.727,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty; repair false sentence boundaries.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 437,
+                "prompt_ms": 2965.959,
+                "prompt_per_token_ms": 6.787091533180778,
+                "prompt_per_second": 147.33851681698906,
+                "predicted_n": 14,
+                "predicted_ms": 757.426,
+                "predicted_per_token_ms": 58.26353846153847,
+                "predicted_per_second": 17.163392859500462
+              }
+            },
+            {
+              "id": "nl-cleanup",
+              "language": "nl",
+              "input": "Eh ik denk. Dat we beter... tot vrijdag kunnen wachten voordat we het voorstel naar Sophie sturen.",
+              "instruction": "",
+              "output": "Eh, ik denk dat we beter kunnen wachten tot vrijdag voordat we het voorstel naar Sophie sturen.",
+              "seconds": 1.902,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep uncertainty and natural Dutch; join hesitation breaks.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 35,
+                "prompt_ms": 615.561,
+                "prompt_per_token_ms": 17.587457142857144,
+                "prompt_per_second": 56.85870287428865,
+                "predicted_n": 23,
+                "predicted_ms": 1282.447,
+                "predicted_per_token_ms": 58.29304545454545,
+                "predicted_per_second": 17.15470502874583
+              }
+            },
+            {
+              "id": "en-correction",
+              "language": "en",
+              "input": "The meeting is on Tuesday no sorry Thursday at 14:30 with Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "The meeting is on Thursday at 14:30 with Jeroen in Utrecht.",
+              "seconds": 1.678,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Resolve the correction to Thursday; do not retain Tuesday.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 34,
+                "prompt_ms": 592.091,
+                "prompt_per_token_ms": 17.41444117647059,
+                "prompt_per_second": 57.42360549307455,
+                "predicted_n": 20,
+                "predicted_ms": 1082.115,
+                "predicted_per_token_ms": 56.953421052631576,
+                "predicted_per_second": 17.55820776904488
+              }
+            },
+            {
+              "id": "nl-correction",
+              "language": "nl",
+              "input": "De afspraak is dinsdag nee sorry donderdag om 14:30 met Jeroen in Utrecht.",
+              "instruction": "",
+              "output": "The appointment is not Tuesday; sorry, it's Thursday at 14:30 with Jeroen in Utrecht.",
+              "seconds": 1.887,
+              "finish_reason": "stop",
+              "missing_literals": [
+                "donderdag"
+              ],
+              "review": "Resolve the correction to donderdag; do not retain dinsdag.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 37,
+                "prompt_ms": 409.386,
+                "prompt_per_token_ms": 11.064486486486487,
+                "prompt_per_second": 90.37925087814433,
+                "predicted_n": 26,
+                "predicted_ms": 1474.143,
+                "predicted_per_token_ms": 58.965720000000005,
+                "predicted_per_second": 16.95900601230681
+              }
+            },
+            {
+              "id": "en-question",
+              "language": "en",
+              "input": "Can you send me the invoice for 127.50 euros before 18 September? I haven't received it yet.",
+              "instruction": "",
+              "output": "Can you send me the invoice for 127.50 euros before September 18? I haven't received it yet.",
+              "seconds": 2.14,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request; do not answer it or invent facts.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 40,
+                "prompt_ms": 417.809,
+                "prompt_per_token_ms": 10.445225,
+                "prompt_per_second": 95.7375259987219,
+                "predicted_n": 29,
+                "predicted_ms": 1718.553,
+                "predicted_per_token_ms": 61.37689285714286,
+                "predicted_per_second": 16.292776539332795
+              }
+            },
+            {
+              "id": "nl-question",
+              "language": "nl",
+              "input": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "instruction": "",
+              "output": "Kun je mij de factuur van 127,50 euro voor 18 september sturen? Ik heb hem nog niet ontvangen.",
+              "seconds": 2.337,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Edit the request in Dutch; do not answer it.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 43,
+                "prompt_ms": 408.2,
+                "prompt_per_token_ms": 9.493023255813954,
+                "prompt_per_second": 105.34051935325822,
+                "predicted_n": 32,
+                "predicted_ms": 1925.479,
+                "predicted_per_token_ms": 62.11222580645161,
+                "predicted_per_second": 16.099889949461925
+              }
+            },
+            {
+              "id": "en-negation",
+              "language": "en",
+              "input": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "instruction": "",
+              "output": "I don't want to cancel the contract. I just want to pause it for two months, not three.",
+              "seconds": 1.895,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 34,
+                "prompt_ms": 610.256,
+                "prompt_per_token_ms": 17.94870588235294,
+                "prompt_per_second": 55.71432316929289,
+                "predicted_n": 23,
+                "predicted_ms": 1281.519,
+                "predicted_per_token_ms": 58.25086363636364,
+                "predicted_per_second": 17.16712744797385
+              }
+            },
+            {
+              "id": "nl-negation",
+              "language": "nl",
+              "input": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "instruction": "",
+              "output": "Ik wil het contract niet opzeggen. Ik wil het alleen twee maanden pauzeren, geen drie.",
+              "seconds": 1.852,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Preserve both negations and two-month duration in Dutch.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 34,
+                "prompt_ms": 593.808,
+                "prompt_per_token_ms": 17.46494117647059,
+                "prompt_per_second": 57.25756473472907,
+                "predicted_n": 23,
+                "predicted_ms": 1254.614,
+                "predicted_per_token_ms": 57.02790909090909,
+                "predicted_per_second": 17.535273797359185
+              }
+            },
+            {
+              "id": "en-selection",
+              "language": "en",
+              "input": "Hi Sophie, I was wondering if you might perhaps have time to review the proposal this week. We need your approval before Friday.",
+              "instruction": "Make this shorter but keep the deadline and friendly tone.",
+              "output": "Hi Sophie, could you please review the proposal this week? We need approval by Friday.",
+              "seconds": 1.873,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction without losing the approval deadline.",
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 113,
+                "prompt_ms": 691.518,
+                "prompt_per_token_ms": 6.119628318584071,
+                "prompt_per_second": 163.40861698466273,
+                "predicted_n": 19,
+                "predicted_ms": 1123.526,
+                "predicted_per_token_ms": 62.418111111111116,
+                "predicted_per_second": 16.02099105850688
+              }
+            },
+            {
+              "id": "nl-selection",
+              "language": "nl",
+              "input": "Hoi Sophie, ik vroeg me af of je misschien deze week tijd hebt om het voorstel te bekijken. We hebben je akkoord nodig voor vrijdag.",
+              "instruction": "Maak dit korter, maar houd de deadline en de vriendelijke toon.",
+              "output": "Hoi Sophie, heb je deze week tijd voor het voorstel? Je akkoord is nodig voor vrijdag.",
+              "seconds": 1.812,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Follow the instruction in natural Dutch without losing the deadline.",
+              "timings": {
+                "cache_n": 58,
+                "prompt_n": 65,
+                "prompt_ms": 433.565,
+                "prompt_per_token_ms": 6.670230769230769,
+                "prompt_per_second": 149.91985054144132,
+                "predicted_n": 23,
+                "predicted_ms": 1332.678,
+                "predicted_per_token_ms": 60.57627272727273,
+                "predicted_per_second": 16.50811373790218
+              }
+            },
+            {
+              "id": "de-cleanup",
+              "language": "de",
+              "input": "Ähm ich denke. Wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "instruction": "",
+              "output": "Ähm, ich denke, wir sollten bis Freitag warten, bevor wir Sophie das Angebot schicken.",
+              "seconds": 1.869,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep German and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 30,
+                "prompt_ms": 652.999,
+                "prompt_per_token_ms": 21.766633333333335,
+                "prompt_per_second": 45.94187739950597,
+                "predicted_n": 20,
+                "predicted_ms": 1158.208,
+                "predicted_per_token_ms": 60.95831578947369,
+                "predicted_per_second": 16.40465270486821
+              }
+            },
+            {
+              "id": "fr-cleanup",
+              "language": "fr",
+              "input": "Euh je pense. Qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "instruction": "",
+              "output": "Je pense qu'on devrait attendre vendredi avant d'envoyer la proposition à Sophie.",
+              "seconds": 1.592,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep French and uncertainty; remove hesitation.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 32,
+                "prompt_ms": 584.505,
+                "prompt_per_token_ms": 18.26578125,
+                "prompt_per_second": 54.74717923713227,
+                "predicted_n": 18,
+                "predicted_ms": 1004.656,
+                "predicted_per_token_ms": 59.09741176470588,
+                "predicted_per_second": 16.921214823780478
+              }
+            },
+            {
+              "id": "nl-holdout-correction",
+              "language": "nl",
+              "input": "We vertrekken maandag, nee woensdag, naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "instruction": "",
+              "output": "We vertrekken woensdag naar Eindhoven. Neem alleen de blauwe map mee, niet de rode.",
+              "seconds": 1.694,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday; preserve the prohibition on taking the red folder.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 41,
+                "prompt_ms": 399.14,
+                "prompt_per_token_ms": 9.735121951219512,
+                "prompt_per_second": 102.72084982712832,
+                "predicted_n": 24,
+                "predicted_ms": 1291.586,
+                "predicted_per_token_ms": 56.155913043478265,
+                "predicted_per_second": 17.807563723979666
+              }
+            },
+            {
+              "id": "nl-holdout-business",
+              "language": "nl",
+              "input": "Hoi Fatima, eh de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "instruction": "",
+              "output": "Hoi Fatima, de offerte is 1.250 euro exclusief btw. De korting geldt alleen als je voor 30 september akkoord geeft. Anders blijft het bedrag 1.400 euro.",
+              "seconds": 3.241,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep the two amounts, conditional discount and VAT exclusion; remove filler.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 60,
+                "prompt_ms": 410.514,
+                "prompt_per_token_ms": 6.8419,
+                "prompt_per_second": 146.1582309007732,
+                "predicted_n": 48,
+                "predicted_ms": 2826.863,
+                "predicted_per_token_ms": 60.14602127659574,
+                "predicted_per_second": 16.62620367524001
+              }
+            },
+            {
+              "id": "en-holdout-correction",
+              "language": "en",
+              "input": "We leave on Monday, no Wednesday, for Eindhoven. Bring only the blue folder, not the red one.",
+              "instruction": "",
+              "output": "We leave on Wednesday for Eindhoven. Bring only the blue folder, not the red one.",
+              "seconds": 1.725,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep only Wednesday and preserve the exclusion of the red folder.",
+              "timings": {
+                "cache_n": 407,
+                "prompt_n": 35,
+                "prompt_ms": 625.639,
+                "prompt_per_token_ms": 17.8754,
+                "prompt_per_second": 55.94280407711156,
+                "predicted_n": 20,
+                "predicted_ms": 1094.692,
+                "predicted_per_token_ms": 57.61536842105263,
+                "predicted_per_second": 17.356480178899634
+              }
+            },
+            {
+              "id": "nl-holdout-selection",
+              "language": "nl",
+              "input": "Beste Fatima, we hebben helaas geen reactie ontvangen op ons voorstel. Zou je uiterlijk 30 september kunnen aangeven of je akkoord gaat? Zonder akkoord starten we niet.",
+              "instruction": "Maak dit vriendelijker, zonder de deadline of voorwaarde te veranderen.",
+              "output": "Beste Fatima, helaas hebben we nog geen reactie op ons voorstel ontvangen. Kunnen we er even mee werken dat je tot 30 september aangeeft of je akkoord gaat? Zonder akkoord starten we niet.",
+              "seconds": 3.993,
+              "finish_reason": "stop",
+              "missing_literals": [],
+              "review": "Keep Dutch, deadline and no-start-without-approval condition while making it friendlier.",
+              "timings": {
+                "cache_n": 58,
+                "prompt_n": 80,
+                "prompt_ms": 710.353,
+                "prompt_per_token_ms": 8.879412499999999,
+                "prompt_per_second": 112.62006354587086,
+                "predicted_n": 51,
+                "predicted_ms": 3220.847,
+                "predicted_per_token_ms": 64.41694000000001,
+                "predicted_per_second": 15.523866858624455
+              }
+            }
+          ],
+          "load_seconds": 2.522,
+          "gpu_loaded_mib_used_free": "5359, 673",
+          "median_seconds": 1.88,
+          "gpu_after_mib_used_free": "5252, 780",
+          "runtime_stopped": true
+        }
+      ]
+    }
+  ]
+}
