@@ -181,6 +181,53 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
         self.assertEqual(self.service.summarize(meeting["id"])["kind"], "summary")
 
+    def test_speaker_labels_ask_before_upload_then_split_passages(self):
+        uploads = []
+
+        class FakeDiarizer:
+            def diarize_wav(self, data, name, should_stop=None, on_status=None, **options):
+                uploads.append((name, data[:4]))
+                on_status("running")
+                return [{"start": 0.0, "end": 0.45, "speaker": "SPEAKER_00"}, {"start": 0.45, "end": 5.0, "speaker": "SPEAKER_01"}]
+
+        self.service._diarizer_factory = lambda cfg: FakeDiarizer()
+        self.cfg["pyannote_api_key"] = "pk"
+        meeting = self.service.start_meeting("Two voices", mic=True, system=True)
+        block = np.full(1600, 3000, dtype=np.int16)
+        for _ in range(10):
+            self.sources[MIC].push(block)
+            self.sources[SYSTEM].push(block)
+        time.sleep(0.35)
+        self.service.stop()
+        self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
+        self.assertTrue(any(p["source"] == "system" for p in self.store.list_passages(meeting["id"])))
+        with self.assertRaises(ConsentRequired) as consent:
+            self.service.label_speakers(meeting["id"])
+        self.assertEqual(consent.exception.disclosure["policy_key"], "upload")
+        self.assertIn("Call audio track", consent.exception.disclosure["sent"][0])
+        self.assertEqual(uploads, [])
+        job = self.service.label_speakers(meeting["id"], remote_ok=True)
+        self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] in ("done", "error")))
+        self.assertEqual(self.store.get_job(job["id"])["state"], "done", self.store.get_job(job["id"])["error"])
+        self.assertEqual(uploads[0][0], f"{meeting['id']}-system.wav")
+        self.assertEqual(uploads[0][1], b"RIFF")
+        speakers = {s["id"]: s for s in self.store.list_speakers(meeting["id"])}
+        self.assertEqual(speakers["system-1"]["name"], "Speaker 1")
+        self.assertEqual(speakers["system-2"]["confirmed"], 0)
+        system_passages = [p for p in self.store.list_passages(meeting["id"]) if p["source"] == "system"]
+        self.assertEqual({p["speaker_id"] for p in system_passages}, {"system-1", "system-2"})
+        self.assertTrue(all(p["source"] != "system" or p["tokens"] for p in self.store.list_passages(meeting["id"])))
+        self.assertIn("speakers", [e["kind"] for e in self.store.list_events(meeting["id"])])
+        # The mic track keeps its own label and its passages.
+        self.assertEqual({p["speaker_id"] for p in self.store.list_passages(meeting["id"]) if p["source"] == "mic"}, {"mic"})
+        # Remembered policy skips the question; a missing key is a clear error.
+        self.service.set_policy("upload", "allow")
+        self.assertEqual(self.service.label_speakers(meeting["id"])["kind"], "speakers")
+        self.cfg["pyannote_api_key"] = ""
+        with self.assertRaises(MeetingError) as missing:
+            self.service.label_speakers(meeting["id"])
+        self.assertIn("pyannoteAI key", str(missing.exception))
+
     def test_interrupted_source_notifies_and_transcription_can_run_later(self):
         meeting = self.record()
         self.sources[SYSTEM].fail("Speakers disappeared")

@@ -83,22 +83,24 @@
     });
   }
   function consentDialog(consent) {
+    const policyKey = consent.policy_key || 'remote';
+    const upload = consent.kind === 'upload';
     return new Promise((resolve) => {
-      const d = dialog(`<div class="mh"><span class="eyebrow">Before the first remote analysis</span>
-        <h2>Ownkey will send meeting text to ${esc(consent.provider)}</h2>
-        <p>Audio never leaves this PC. The transcript text does, over your own key. Check what goes out, then decide how to handle this next time.</p></div>
+      const d = dialog(`<div class="mh"><span class="eyebrow">${upload ? 'Before the first audio upload' : 'Before the first remote analysis'}</span>
+        <h2>${esc(consent.title || `Ownkey will send meeting text to ${consent.provider}`)}</h2>
+        <p>${esc(consent.intro || 'Audio never leaves this PC. The transcript text does, over your own key. Check what goes out, then decide how to handle this next time.')}</p></div>
         <div class="mb"><dl class="kv">
           <dt>Provider</dt><dd>${esc(consent.provider)} · <span class="mono">${esc(consent.model)}</span><span class="ink-3">${esc(consent.host)}</span></dd>
-          <dt>Sent</dt><dd>${consent.sent.map((s) => `<span class="pill">${esc(s)}</span>`).join('')}</dd>
-          <dt>Not sent</dt><dd>${consent.not_sent.map((s) => `<span class="pill green">${esc(s)}</span>`).join('')}</dd>
+          <dt>Sent</dt><dd>${(consent.sent || []).map((s) => `<span class="pill ${upload ? 'amber' : ''}">${esc(s)}</span>`).join('')}</dd>
+          <dt>Not sent</dt><dd>${(consent.not_sent || []).map((s) => `<span class="pill green">${esc(s)}</span>`).join('')}</dd>
         </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${esc(consent.provider)}</label></div>
-        <p class="hint" style="margin-top:8px">Long meetings go out in bounded sections with their passage ids. Nothing is cut off silently.</p></div>
-        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}Send and continue</button></div>`);
+        ${consent.retention ? `<p class="hint" style="margin-top:8px">${esc(consent.retention)}</p>` : ''}</div>
+        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
       $('[data-no]', d.root).onclick = () => { d.close(); resolve(false); };
       $('[data-yes]', d.root).onclick = async () => {
         const remember = $('[data-remember]', d.root).checked;
         d.close();
-        if (remember) { try { await post('/api/policy', { remote: 'allow' }); } catch (e) { toast(e.message); } }
+        if (remember) { try { await post('/api/policy', { [policyKey]: 'allow' }); } catch (e) { toast(e.message); } }
         resolve(true);
       };
     });
@@ -189,6 +191,7 @@
       <section><span class="eyebrow">Readiness</span><div class="card card-pad" style="padding-top:2px;padding-bottom:2px">
         <div class="row"><span class="l">${ico('cpu', 15)}Transcription · Orukeet on this PC</span><span class="v">${model.installed ? '<span class="pill green">Installed</span><span class="meta">runs after Stop</span>' : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>'}</span></div>
         <div class="row"><span class="l">${ico('sparkle', 15)}Summary and questions · ${esc(text.label || text.provider || 'no provider')}${text.model ? ` · ${esc(text.model)}` : ''}</span><span class="v">${text.configured ? `<span class="pill ${text.remote ? 'amber' : 'green'}">${text.remote ? 'Remote' : 'Local'}</span>` : '<span class="pill">Not configured</span>'}<span class="meta">${text.remote ? (status.remote_policy === 'allow' ? 'allowed' : 'asks before first use') : ''}</span></span></div>
+        <div class="row"><span class="l">${ico('users', 15)}Speaker labels · pyannoteAI ${esc((status.speaker_labels || {}).model || '')}</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill amber">Remote</span>' : '<span class="pill">No key</span>'}<span class="meta">${(status.speaker_labels || {}).configured ? (status.upload_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : 'Settings › Meetings'}</span></span></div>
         <div class="row"><span class="l">${ico('lock', 15)}Library</span><span class="v"><span class="meta mono">${esc(status.library ? status.library.root : '')}</span></span></div>
       </div></section>
       <section><span class="eyebrow">Audio retention for this meeting</span><div class="card card-pad opts">
@@ -265,8 +268,12 @@
     const tj = runningJob('transcribe'), sj = runningJob('summary'), dj = runningJob('draft');
     if (m.state === 'interrupted' && m.audio_state === 'kept' && !tj) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>This recording was interrupted.</b><p>${esc((d.events.filter((e) => e.kind === 'interrupted').pop() || {}).detail || 'Ownkey stopped capturing.')} ${fmt(m.elapsed)} of audio and your notes are saved. Nothing resumed on its own.</p></div><div class="acts"><button class="btn primary xs" data-transcribe>${ico('play', 12)}Transcribe now</button></div></div>`);
     if (tj) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">Transcribing on this PC</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
-    const failed = ['transcribe', 'summary', 'draft'].map(lastJob).filter((j) => j && j.state === 'error' && (j.kind === 'transcribe' || state.tab === 'summary'));
-    for (const job of failed) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>${job.kind === 'transcribe' ? 'Transcription' : job.kind === 'summary' ? 'Summary' : 'Draft'} failed.</b><p>${esc(job.error)}</p></div><div class="acts">${job.kind === 'transcribe' ? `<button class="btn secondary xs" data-transcribe>${ico('refresh', 12)}Retry</button>` : ''}</div></div>`);
+    const failed = ['transcribe', 'speakers', 'summary', 'draft'].map(lastJob).filter((j) => j && j.state === 'error'
+      && (j.kind === 'transcribe' || (j.kind === 'speakers' && state.tab === 'transcript') || ((j.kind === 'summary' || j.kind === 'draft') && state.tab === 'summary')));
+    const names = { transcribe: 'Transcription', speakers: 'Speaker labelling', summary: 'Summary', draft: 'Draft' };
+    for (const job of failed) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>${names[job.kind]} failed.</b><p>${esc(job.error)}</p></div><div class="acts">${job.kind === 'transcribe' ? `<button class="btn secondary xs" data-transcribe>${ico('refresh', 12)}Retry</button>` : job.kind === 'speakers' ? `<button class="btn secondary xs" data-speakers>${ico('refresh', 12)}Retry</button>` : ''}</div></div>`);
+    const pj = runningJob('speakers');
+    if (pj && state.tab === 'transcript') out.push(`<div class="banner neutral">${ico('users', 16)}<div class="body"><b><span class="shimmer">Labelling speakers with pyannoteAI</span></b><p>${esc(pj.detail || '')} · the track was uploaded for this step only.</p></div></div>`);
     if (sj || dj) out.push(`<div class="banner neutral">${ico('sparkle', 16)}<div class="body"><b><span class="shimmer">${sj ? 'Generating the summary' : 'Drafting the follow-up'}</span></b><p>${esc((sj || dj).detail || '')}</p></div></div>`);
     if (!live() && m.state === 'stopped' && !d.passages.length && !tj && !failed.length && m.audio_state === 'kept') out.push(`<div class="banner neutral">${ico('info', 16)}<div class="body"><b>Not transcribed yet.</b><p>Orukeet transcribes on this PC; nothing is uploaded.</p></div><div class="acts"><button class="btn secondary xs" data-transcribe>${ico('play', 12)}Transcribe</button></div></div>`);
     return out.join('');
@@ -300,7 +307,13 @@
     }
     while (eventIndex < events.length) rows.push(sysLine(events[eventIndex++]));
     const empty = d.passages.length ? (shown ? '' : `<p class="hint">No passage matches “${esc(state.query)}”.</p>`) : (runningJob('transcribe') ? '' : '<p class="hint">Nothing to show yet.</p>');
-    return `<div class="tx-tools"><div class="field sm">${ico('search', 13)}<input data-search placeholder="Search this transcript" value="${esc(state.query)}">${q ? `<span class="mono ink-3" style="font-size:11px">${shown} of ${d.passages.length}</span>` : ''}</div><span class="grow"></span><span class="hint">${d.passages.length} passages · rev ${d.meeting.transcript_rev}</span></div>
+    const labels = (state.status && state.status.speaker_labels) || {};
+    const labelled = d.speakers.some((s) => s.id.includes('-'));
+    const canLabel = d.passages.length && d.meeting.audio_state === 'kept' && !runningJob() && !live();
+    const labelButton = !d.passages.length ? '' : labels.configured
+      ? `<button class="btn secondary xs" data-speakers ${canLabel ? '' : 'disabled'} title="Uploads the call audio track to pyannoteAI; asks first">${ico('users', 12)}${labelled ? 'Redo speaker labels' : 'Add speaker labels'}</button>`
+      : `<button class="btn quiet xs" data-settings-meetings title="Speaker labels need a pyannoteAI key">${ico('users', 12)}Speaker labels: add a key in Settings</button>`;
+    return `<div class="tx-tools"><div class="field sm">${ico('search', 13)}<input data-search placeholder="Search this transcript" value="${esc(state.query)}">${q ? `<span class="mono ink-3" style="font-size:11px">${shown} of ${d.passages.length}</span>` : ''}</div>${labelButton}<span class="grow"></span><span class="hint">${d.passages.length} passages · rev ${d.meeting.transcript_rev}</span></div>
       <div class="speakers">${speakers}${d.speakers.length ? '<span class="hint" style="align-self:center">Click a name to rename or confirm it.</span>' : ''}</div>${rows.join('')}${empty}`;
   }
   function highlight(text, q) { const safe = esc(text); if (!q) return safe; const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); return safe.replace(re, (m) => `<mark>${m}</mark>`); }
@@ -344,6 +357,8 @@
     on('[data-resume]', () => post(`/api/meetings/${id}/resume`).then(tick).catch((e) => toast(e.message)));
     on('[data-stop]', () => post(`/api/meetings/${id}/stop`).then(() => { toast('Recording stopped. Transcribing on this PC.', 'ok'); return tick(); }).catch((e) => toast(e.message)));
     on('[data-transcribe]', () => post(`/api/meetings/${id}/transcribe`).then(tick).catch((e) => toast(e.message)));
+    on('[data-speakers]', () => withConsent((ok) => post(`/api/meetings/${id}/speakers`, { remote_ok: ok })).then((r) => r && tick()).catch((e) => toast(e.message)));
+    on('[data-settings-meetings]', () => post('/api/settings/open').catch((e) => toast(e.message)));
     on('[data-export]', (e) => { window.location.href = `/api/meetings/${id}/export?format=${e.currentTarget.dataset.export}&token=${encodeURIComponent(TOKEN)}`; });
     on('[data-more]', (e) => openMenu(e.currentTarget, [
       { label: 'Export as Markdown', icon: 'download', run: () => { location.href = `/api/meetings/${id}/export?format=md&token=${encodeURIComponent(TOKEN)}`; } },

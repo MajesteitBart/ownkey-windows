@@ -73,7 +73,7 @@ ROUTES = [
     ("GET", r"/api/meetings/(?P<mid>[\w-]+)", "meeting"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)", "rename"),
     ("DELETE", r"/api/meetings/(?P<mid>[\w-]+)", "delete"),
-    ("POST", r"/api/meetings/(?P<mid>[\w-]+)/(?P<action>pause|resume|stop|transcribe|summary|draft|ask|remove-audio)", "action"),
+    ("POST", r"/api/meetings/(?P<mid>[\w-]+)/(?P<action>pause|resume|stop|transcribe|speakers|summary|draft|ask|remove-audio)", "action"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/notes", "notes"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/passages/(?P<pid>[\w-]+)", "passage"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/speakers/(?P<sid>[\w-]+)", "speaker"),
@@ -218,8 +218,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def h_action(self, query, mid, action):
         service = self.owner.service
-        body = self._body() if action in ("summary", "draft", "ask") else {}
+        body = self._body() if action in ("summary", "draft", "ask", "speakers") else {}
         remote_ok = bool(body.get("remote_ok"))
+        if action == "speakers":
+            return self._json(HTTPStatus.ACCEPTED, {"job": service.label_speakers(mid, remote_ok=remote_ok)})
         if action == "pause":
             return self._json(HTTPStatus.OK, {"capture": service.pause()})
         if action == "resume":
@@ -284,8 +286,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def h_policy(self, query):
         body = self._body()
-        self.owner.service.set_remote_policy(str(body.get("remote", "ask")))
-        self._json(HTTPStatus.OK, {"remote_policy": self.owner.service.remote_policy()})
+        service = self.owner.service
+        for kind in ("remote", "upload"):
+            if kind in body:
+                service.set_policy(kind, str(body.get(kind)))
+        self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(), "upload_policy": service.upload_policy()})
 
     def h_open_settings(self, query):
         self.owner.service.open_settings()

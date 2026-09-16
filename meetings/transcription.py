@@ -17,9 +17,11 @@ import numpy as np
 from . import audio
 
 WINDOW_SECONDS = 28.0        # decode at most this much audio at once
-WINDOW_MIN_SECONDS = 12.0    # never cut a window shorter than this
+WINDOW_MIN_SECONDS = 6.0     # after this much audio, the next real pause ends the window
+WINDOW_FORCE_MIN_SECONDS = 12.0  # without a pause, never cut shorter than this
 BOUNDARY_SEARCH_SECONDS = 8.0
 QUIET_FRAME_SECONDS = 0.05
+PAUSE_SECONDS = 0.5          # a run of quiet frames this long counts as a pause
 SILENT_WINDOW_DB = -55.0     # a window this quiet is skipped without decoding
 PASSAGE_PAUSE_SECONDS = 0.9  # a gap between tokens this long starts a new passage
 PASSAGE_MAX_SECONDS = 40.0
@@ -32,24 +34,46 @@ def _sanitize_text(text: str) -> str:
 
 
 def window_bounds(samples: np.ndarray, rate: int = audio.SAMPLE_RATE) -> list[tuple[int, int]]:
-    """Split a track into (start, end) sample ranges at quiet moments."""
+    """Split a track into (start, end) sample ranges for decoding.
+
+    Short windows keep the recognizer accurate: it drops words when a long
+    window mixes languages or speakers. A window ends at the first real pause
+    (half a second of quiet) after six seconds of audio; without a pause it
+    ends at the quietest moment before the 28-second limit.
+    """
     total = int(samples.size)
+    if total == 0:
+        return []
+    frame = max(1, int(QUIET_FRAME_SECONDS * rate))
+    frames = total // frame
+    energy = np.abs(samples[:frames * frame].astype(np.float32)).reshape(-1, frame).mean(axis=1) if frames else np.zeros(0)
+    loud = energy[energy > 0]
+    threshold = max(60.0, 0.08 * float(np.percentile(loud, 90))) if loud.size else 60.0
+    quiet = energy < threshold
+    pause_frames = max(1, int(PAUSE_SECONDS / QUIET_FRAME_SECONDS))
     max_len = int(WINDOW_SECONDS * rate)
     min_len = int(WINDOW_MIN_SECONDS * rate)
+    force_min = int(WINDOW_FORCE_MIN_SECONDS * rate)
     search = int(BOUNDARY_SEARCH_SECONDS * rate)
-    frame = max(1, int(QUIET_FRAME_SECONDS * rate))
     bounds = []
     start = 0
     while start < total:
-        end = min(total, start + max_len)
-        if end < total:
-            region_start = max(start + min_len, end - search)
-            region = samples[region_start:end]
-            if region.size >= frame:
-                usable = (region.size // frame) * frame
-                energy = np.abs(region[:usable].astype(np.float32)).reshape(-1, frame).mean(axis=1)
-                quietest = int(np.argmin(energy))
-                end = region_start + quietest * frame + frame // 2
+        limit = min(total, start + max_len)
+        end = 0
+        first = (start + min_len) // frame
+        run = 0
+        for index in range(first, min(limit // frame, frames)):
+            run = run + 1 if quiet[index] else 0
+            if run >= pause_frames:
+                # cut in the middle of the pause so neither side loses speech
+                end = (index - run // 2) * frame
+                break
+        if not end and limit < total:
+            region_start = max(start + force_min, limit - search)
+            region = energy[region_start // frame: limit // frame]
+            end = region_start + int(np.argmin(region)) * frame + frame // 2 if region.size else limit
+        if not end or end <= start:
+            end = limit
         bounds.append((start, end))
         start = end
     return bounds
@@ -75,10 +99,11 @@ def tokens_to_passages(tokens: list[str], timestamps: list[float], durations: li
                 groups.append(current)
                 current = None
         if current is None:
-            current = {"start": start, "end": end, "text": text_piece.lstrip()}
+            current = {"start": start, "end": end, "text": text_piece.lstrip(), "tokens": []}
         else:
             current["text"] += text_piece
             current["end"] = max(current["end"], end)
+        current["tokens"].append((text_piece, start, end))
     if current is not None:
         groups.append(current)
     passages = []
@@ -90,6 +115,8 @@ def tokens_to_passages(tokens: list[str], timestamps: list[float], durations: li
             "start": round(offset + group["start"], 2),
             "end": round(min(offset + group["end"], window_end), 2),
             "text": text,
+            # Absolute token timing lets speaker labels split a passage later.
+            "tokens": [(piece, round(offset + s, 2), round(min(offset + e, window_end), 2)) for piece, s, e in group["tokens"]],
         })
     return passages
 

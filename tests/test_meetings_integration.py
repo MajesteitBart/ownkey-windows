@@ -133,13 +133,18 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "config.json")
             with open(path, "w", encoding="utf-8") as handle:
-                json.dump({"meetings_remote_policy": "always", "meetings_auto_summary": "yes", "meetings_retention": "forever"}, handle)
+                json.dump({"meetings_remote_policy": "always", "meetings_auto_summary": "yes", "meetings_retention": "forever",
+                           "meetings_upload_policy": "allow", "pyannote_api_key": " pk-1 ", "meetings_auto_speakers": 1}, handle)
             with patch.object(ownkey, "CONFIG_FILE", path):
                 cfg = ownkey.load_config()
         self.assertEqual(cfg["meetings_remote_policy"], "ask")
+        self.assertEqual(cfg["meetings_upload_policy"], "allow")
         self.assertTrue(cfg["meetings_auto_summary"])
+        self.assertTrue(cfg["meetings_auto_speakers"])
         self.assertEqual(cfg["meetings_retention"], "days7")
+        self.assertEqual(cfg["pyannote_api_key"], "pk-1")
         self.assertEqual(ownkey.DEFAULT_CONFIG["meetings_remote_policy"], "ask")
+        self.assertEqual(ownkey.DEFAULT_CONFIG["pyannote_api_key"], "")
 
     def test_config_changes_from_the_meeting_window_are_saved(self):
         app = make_app()

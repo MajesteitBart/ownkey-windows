@@ -229,8 +229,11 @@ tabs: **My thoughts** (your notes, never touched by AI), **Transcript** (timed
 passages you can correct, search and play back) and **Summary** (decisions,
 action items and open questions with citations, plus questions and a follow-up
 draft). Summaries and answers use the rewrite provider from Settings and ask
-before the first remote request; audio never leaves the PC. Export as Markdown
-or JSON at any time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
+before the first remote request; audio never leaves the PC for that. Speaker
+labels are optional: with a pyannoteAI key (Settings › Meetings) the call
+audio track is uploaded to pyannoteAI after you agree, and passages come back
+as Speaker 1, Speaker 2, … for you to name. Export as Markdown or JSON at any
+time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
 for what is built and verified.
 
 ## 05 · Bring your own key

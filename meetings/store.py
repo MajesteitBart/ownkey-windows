@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS passages (
     corrected TEXT,
     quality TEXT NOT NULL DEFAULT '',
     rev INTEGER NOT NULL DEFAULT 1,
+    tokens TEXT,
     PRIMARY KEY (meeting_id, id)
 );
 CREATE TABLE IF NOT EXISTS notes (
@@ -130,6 +131,22 @@ def _row(cursor_row) -> dict | None:
     return dict(cursor_row) if cursor_row is not None else None
 
 
+def _tokens_json(tokens) -> str | None:
+    """Token timing as compact JSON: [[text, start, end], ...]."""
+    if not tokens:
+        return None
+    return json.dumps([[str(t[0]), round(float(t[1]), 2), round(float(t[2]), 2)] for t in tokens], ensure_ascii=False)
+
+
+def _tokens_load(value) -> list | None:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class MeetingStore:
     """Thread-safe access to the meeting library.
 
@@ -150,8 +167,11 @@ class MeetingStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(passages)")}
+            if "tokens" not in columns:  # libraries created before speaker labels
+                self._conn.execute("ALTER TABLE passages ADD COLUMN tokens TEXT")
             self._conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
             )
 
     # ── housekeeping ───────────────────────────────────────────────
@@ -314,21 +334,26 @@ class MeetingStore:
     def replace_passages(self, meeting_id: str, passages: list[dict], rev: int) -> None:
         """Store recognition output as the base revision, keeping corrections by id."""
         with self._tx():
-            existing = {
-                r["id"]: dict(r)
-                for r in self._conn.execute("SELECT * FROM passages WHERE meeting_id = ?", (meeting_id,))
-            }
+            existing, by_content = {}, {}
+            for r in self._conn.execute("SELECT * FROM passages WHERE meeting_id = ?", (meeting_id,)):
+                existing[r["id"]] = dict(r)
+                by_content[(r["source"], round(float(r["start"]), 2), r["text"])] = dict(r)
             self._conn.execute("DELETE FROM passages WHERE meeting_id = ?", (meeting_id,))
             for position, passage in enumerate(passages):
                 old = existing.get(passage["id"])
-                corrected = old["corrected"] if old and old.get("text") == passage["text"] else None
-                speaker_id = old["speaker_id"] if old else passage["speaker_id"]
+                if not (old and old.get("text") == passage["text"]):
+                    # ids shift when passages are split; the same words at the
+                    # same time still carry their correction and speaker
+                    old = by_content.get((passage["source"], round(float(passage["start"]), 2), passage["text"]))
+                same_text = bool(old and old.get("text") == passage["text"])
+                corrected = old["corrected"] if same_text else None
+                speaker_id = old["speaker_id"] if same_text and not passage.get("speaker_labelled") else passage["speaker_id"]
                 self._conn.execute(
                     'INSERT INTO passages(meeting_id, id, position, source, speaker_id, start, "end", text,'
-                    " corrected, quality, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " corrected, quality, rev, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (meeting_id, passage["id"], position, passage["source"], speaker_id,
                      float(passage["start"]), float(passage["end"]), passage["text"], corrected,
-                     passage.get("quality", ""), int(rev)),
+                     passage.get("quality", ""), int(rev), _tokens_json(passage.get("tokens"))),
                 )
             self._conn.execute("UPDATE meetings SET transcript_rev = ?, updated_at = ? WHERE id = ?",
                                (int(rev), self._clock(), meeting_id))
@@ -341,9 +366,10 @@ class MeetingStore:
             for offset, passage in enumerate(passages):
                 self._conn.execute(
                     'INSERT OR REPLACE INTO passages(meeting_id, id, position, source, speaker_id, start, "end", text,'
-                    " corrected, quality, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+                    " corrected, quality, rev, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
                     (meeting_id, passage["id"], position + offset, passage["source"], passage["speaker_id"],
-                     float(passage["start"]), float(passage["end"]), passage["text"], passage.get("quality", ""), int(rev)),
+                     float(passage["start"]), float(passage["end"]), passage["text"], passage.get("quality", ""), int(rev),
+                     _tokens_json(passage.get("tokens"))),
                 )
 
     def clear_passages(self, meeting_id: str) -> None:
@@ -354,6 +380,8 @@ class MeetingStore:
         with self._lock:
             rows = [dict(r) for r in self._conn.execute(
                 "SELECT * FROM passages WHERE meeting_id = ? ORDER BY start, position", (meeting_id,))]
+        for row in rows:
+            row["tokens"] = _tokens_load(row.get("tokens"))
         return rows
 
     def get_passage(self, meeting_id: str, passage_id: str) -> dict | None:

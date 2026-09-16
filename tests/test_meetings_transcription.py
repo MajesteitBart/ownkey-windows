@@ -8,17 +8,28 @@ from meetings.transcription import (format_time, merge_tracks, tokens_to_passage
 
 
 class WindowTests(unittest.TestCase):
-    def test_windows_cut_at_quiet_moments_and_cover_the_track(self):
+    def test_windows_end_at_the_first_pause_after_six_seconds(self):
         rate = 16000
         noise = (np.random.default_rng(1).normal(0, 3000, rate * 60)).astype(np.int16)
-        noise[rate * 20: rate * 21] = 0  # a one-second silence inside the search region
+        noise[rate * 3: rate * 4] = 0   # too early: ignored
+        noise[rate * 9: rate * 10] = 0  # first pause after six seconds
+        noise[rate * 40: rate * 41] = 0
         bounds = window_bounds(noise, rate)
         self.assertEqual(bounds[0][0], 0)
         self.assertEqual(bounds[-1][1], noise.size)
         for (a, b), (c, d) in zip(bounds, bounds[1:]):
             self.assertEqual(b, c)
-        self.assertTrue(rate * 20 <= bounds[0][1] <= rate * 21)
+        self.assertTrue(rate * 9 <= bounds[0][1] <= rate * 10)
+        # no pause between 10 s and 38 s: the second window is forced at the quietest frame before 38 s
+        self.assertTrue(rate * 22 <= bounds[1][1] <= rate * 38)
         self.assertEqual(window_bounds(np.zeros(0, dtype=np.int16)), [])
+
+    def test_windows_never_exceed_the_limit_without_pauses(self):
+        rate = 16000
+        noise = (np.random.default_rng(2).normal(0, 3000, rate * 90)).astype(np.int16)
+        bounds = window_bounds(noise, rate)
+        self.assertTrue(all(b - a <= rate * 28 for a, b in bounds))
+        self.assertTrue(all(b - a >= rate * 12 for a, b in bounds[:-1]))
 
     def test_short_track_is_one_window(self):
         self.assertEqual(window_bounds(np.ones(16000 * 5, dtype=np.int16)), [(0, 16000 * 5)])

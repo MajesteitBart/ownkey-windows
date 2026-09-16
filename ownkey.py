@@ -152,10 +152,20 @@ DEFAULT_CONFIG = {
     "remove_fillers": True,
     "filler_languages": ["en", "nl"],
     "custom_fillers": "",
-    # Meetings: remote analysis policy, auto-summary after transcription, default audio retention.
+    # Meetings: remote analysis policy, auto-summary after transcription, default audio retention,
+    # and speaker labels through pyannoteAI (audio upload policy, key, auto-run).
     "meetings_remote_policy": "ask",
+    "meetings_upload_policy": "ask",
     "meetings_auto_summary": False,
+    "meetings_auto_speakers": False,
     "meetings_retention": "days7",
+    "pyannote_api_key": "",
+}
+
+MEETING_RETENTION_LABELS = {
+    "days7": "7 days after transcription",
+    "keep": "Until I delete the meeting",
+    "after_transcription": "Remove after transcription",
 }
 
 HOTKEY_LIST = [
@@ -468,9 +478,12 @@ def load_config() -> dict:
     cfg["filler_languages"] = normalize_filler_languages(cfg.get("filler_languages"))
     cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
     cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
+    cfg["meetings_upload_policy"] = "allow" if cfg.get("meetings_upload_policy") == "allow" else "ask"
     cfg["meetings_auto_summary"] = bool(cfg.get("meetings_auto_summary", False))
-    if cfg.get("meetings_retention") not in ("days7", "keep", "after_transcription"):
+    cfg["meetings_auto_speakers"] = bool(cfg.get("meetings_auto_speakers", False))
+    if cfg.get("meetings_retention") not in MEETING_RETENTION_LABELS:
         cfg["meetings_retention"] = "days7"
+    cfg["pyannote_api_key"] = str(cfg.get("pyannote_api_key") or "").strip()
     return cfg
 
 
@@ -1464,6 +1477,7 @@ class SettingsWindow:
         ("dictionary", "Dictionary", "Names and terms typed the way you spell them."),
         ("fillers", "Filler words", "Clean hesitations out of dictation without an AI model."),
         ("rewriting", "Rewriting", "Optional AI polish for dictation, and voice edits for selected text."),
+        ("meetings", "Meetings", "Record a conversation, transcribe it on this PC, and label who spoke."),
     )
     FILLER_SAMPLE = "Um, I think, uh, we should ehm ship it on Tuesday. Er is nog één ding."
 
@@ -2142,6 +2156,35 @@ class SettingsWindow:
         v_rewrite_hotkey.set(sanitize_rewrite_hotkey(cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value))
         c_rewrite_hotkey.pack()
 
+        # ---- meetings page --------------------------------------------
+        page = self.pages["meetings"]
+        card = self._card(page).inner
+        self._heading(card, "Speaker labels", "pyannoteAI · remote")
+        tk.Label(card, text="Who said what, from pyannoteAI's hosted diarization. The call audio track is uploaded "
+                 "for that step only; the transcript and your notes never are. Uploads are deleted within 48 hours "
+                 "and are not used for training. Without a key, passages keep their Microphone and Call audio labels.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
+        pyannote_field = self._field(card, "pyannoteAI API key", "Create one at dashboard.pyannote.ai.")
+        e_pyannote = self._entry(pyannote_field.control, show="•")
+        e_pyannote.pack(fill="x")
+        e_pyannote.set_value(cfg.get("pyannote_api_key", ""))
+        v_auto_speakers = tk.BooleanVar(win, value=bool(cfg.get("meetings_auto_speakers", False)))
+        self._toggle(self._row(card, "Label speakers after every transcription",
+                               "Runs only after you have allowed the upload once in the meeting window.", last=True),
+                     v_auto_speakers).pack()
+
+        card = self._card(page).inner
+        self._heading(card, "Summary and storage", "Meetings")
+        v_auto_summary = tk.BooleanVar(win, value=bool(cfg.get("meetings_auto_summary", False)))
+        self._toggle(self._row(card, "Summarize after every transcription",
+                               "Uses the rewrite provider above. Runs only after you have allowed remote analysis once."),
+                     v_auto_summary).pack()
+        control = self._row(card, "Keep audio", "Text stays until you delete a meeting. Audio is needed for playback and re-transcription.", last=True)
+        v_retention, c_retention = self._combo(control, list(MEETING_RETENTION_LABELS.values()), width=26)
+        v_retention.set(MEETING_RETENTION_LABELS.get(cfg.get("meetings_retention"), MEETING_RETENTION_LABELS["days7"]))
+        c_retention.pack()
+
         # ---- footer actions -----------------------------------------
         def save():
             if saving[0]:
@@ -2195,6 +2238,11 @@ class SettingsWindow:
             new_cfg["remove_fillers"] = v_remove_fillers.get()
             new_cfg["filler_languages"] = [code for code, var in v_filler_languages.items() if var.get()]
             new_cfg["custom_fillers"] = ", ".join(normalize_vocabulary(e_custom_fillers.value()))
+            new_cfg["pyannote_api_key"] = e_pyannote.value().strip()
+            new_cfg["meetings_auto_speakers"] = v_auto_speakers.get()
+            new_cfg["meetings_auto_summary"] = v_auto_summary.get()
+            new_cfg["meetings_retention"] = next(
+                (key for key, label in MEETING_RETENTION_LABELS.items() if label == v_retention.get()), "days7")
             chosen_rewrite_hotkey = v_rewrite_hotkey.get()
             new_cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(chosen_rewrite_hotkey, new_cfg["hotkey"])
             if chosen_rewrite_hotkey != "off" and new_cfg["rewrite_hotkey"] == "off":

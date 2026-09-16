@@ -21,11 +21,28 @@ usable slice, not the whole spec.
   meeting is marked interrupted, chunk rows without files are dropped, and
   Ownkey notifies you. Recording never resumes on its own.
 - **Transcription on this PC** with the installed Orukeet model, after Stop.
-  Tracks are decoded in windows that end at the quietest moment before 28 s;
-  token timestamps become passages (`p0001`, `p0002`, …) with source labels
-  Microphone and Call audio. Passages appear while the job runs. If Orukeet is
-  not installed the job fails with a message and the meeting keeps its audio;
-  there is no download and no cloud transcription for meetings.
+  Orukeet has no hard clip limit, but it drops words when one decode window is
+  long or mixes languages (a 29 s track with English and Dutch turns lost
+  three of four sentences when decoded whole). So each track is decoded in
+  windows: a window ends at the first pause of half a second after six
+  seconds of audio, and never runs past 28 s (then it ends at the quietest
+  moment). Every window returns per-token timestamps, offset by the window
+  start, so passages (`p0001`, `p0002`, …) carry track time and keep their
+  token timing for later speaker splitting. Passages appear while the job
+  runs. If Orukeet is not installed the job fails with a message and the
+  meeting keeps its audio; there is no download and no cloud transcription
+  for meetings.
+- **Speaker labels through pyannoteAI** (`precision-2`, exclusive
+  diarization). "Add speaker labels" in the Transcript tab uploads the call
+  audio track (or the microphone track when it is the only source) to
+  api.pyannote.ai, polls the job, gives every token the speaker whose segment
+  overlaps it most, splits passages where the speaker changes, and names them
+  Speaker 1, Speaker 2, … until you confirm names. The first upload shows a
+  disclosure (what is sent, what is not, pyannoteAI deletes uploads within 48
+  hours and results within 24 hours, no training); "Don't ask again" stores
+  `meetings_upload_policy = allow`. The key lives in Settings › Meetings
+  (`pyannote_api_key`, or the `PYANNOTEAI_API_KEY` environment variable).
+  Local diarization is not offered: it needs a GPU-class machine.
 - **Review**: My thoughts (autosaved notes, timestamp insertion), Transcript
   (search, playback of both tracks, inline corrections kept as a separate
   revision next to the recognition text, speaker rename and confirmation,
@@ -56,8 +73,11 @@ usable slice, not the whole spec.
 | Key | Default | Meaning |
 |---|---|---|
 | `meetings_remote_policy` | `ask` | `allow` skips the disclosure for remote text models |
+| `meetings_upload_policy` | `ask` | `allow` skips the disclosure for uploading audio to pyannoteAI |
 | `meetings_auto_summary` | `false` | run a summary right after transcription (only when no disclosure is pending) |
+| `meetings_auto_speakers` | `false` | label speakers right after transcription (only when the upload is allowed) |
 | `meetings_retention` | `days7` | default retention for new meetings |
+| `pyannote_api_key` | empty | pyannoteAI key for speaker labels (Settings › Meetings) |
 
 ## Verified on this machine
 
@@ -72,6 +92,12 @@ usable slice, not the whole spec.
   a real summary, two questions (one answerable, one refused as not in the
   record), a draft, Markdown and JSON export.
 - Orukeet timing: a 40 s clip decodes in about 3 s with per-token timestamps.
+- Speaker labels end to end against the real pyannoteAI API: a call track
+  built from two synthetic voices (English and Dutch, taking turns) came back
+  as two speakers; passages were split and labelled Speaker 1 and Speaker 2
+  with the microphone track untouched. The disclosure returned 409 first and
+  the remembered policy skipped it afterwards. The key came from Bitwarden
+  (`openclaw/PYANNOTEAI_API_KEY`) and answered `/v1/test` with 200.
 
 ## Not verified here
 
@@ -85,8 +111,11 @@ usable slice, not the whole spec.
   fixtures so no microphone was opened without you).
 - Long meetings (60 to 120 minutes), Bluetooth routing, echo, clock drift
   figures. The spec's validation list still applies.
-- Automatic speaker labels (diarization) are not implemented; labels are
-  Microphone and Call audio, renamable and confirmable.
+- Speaker labels were exercised on a 29 s synthetic track only. Long
+  uploads (a one-hour track is about 115 MB of WAV) and real overlapping
+  speech have not been tried; pyannoteAI documents no size limit.
+- Code-switching without a pause inside one window can still lose words;
+  the pause-based windowing only helps when speakers pause between turns.
 - Packaging: `Ownkey.spec` now bundles `meetings/ui` and the `soundcard`
   data files, but no installer was built in this session.
 
