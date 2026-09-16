@@ -108,6 +108,33 @@ class SettingsLifecycleTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
 
+class EntryWidgetTests(unittest.TestCase):
+    def setUp(self):
+        self.root = ownkey.tk.Tk()
+        self.root.withdraw()
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def test_placeholder_is_an_overlay_and_never_the_field_text(self):
+        entry = ownkey.brand_ui.Entry(self.root, placeholder="Misspelling")
+        entry.pack()
+        self.root.update()
+        self.assertEqual(entry.value(), "")
+        self.assertEqual(entry.get(), "")
+        self.assertTrue(entry._placeholder.winfo_manager())
+        entry.insert(0, "KinDoc")
+        self.root.update()
+        self.assertEqual(entry.value(), "KinDoc")
+        self.assertFalse(entry._placeholder.winfo_manager())
+        entry.set_value("")
+        self.root.update()
+        self.assertTrue(entry._placeholder.winfo_manager())
+        entry.configure(state="disabled")
+        self.root.update()
+        self.assertFalse(entry._placeholder.winfo_manager())
+
+
 @unittest.skipUnless(os.name == "nt", "Windows process management")
 class OverlayProcessTests(unittest.TestCase):
     def test_application_closes_settings_and_background_workers_on_quit(self):

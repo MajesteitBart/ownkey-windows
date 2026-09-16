@@ -333,67 +333,98 @@ class NavItem(tk.Canvas):
         self.create_text(16, height / 2, text=self.text, anchor="w", fill=color, font=self.font)
 
 
-class Entry(tk.Entry):
-    """Slate input with an orange focus ring and optional placeholder."""
+class Entry(tk.Frame):
+    """Padded input with an orange focus ring and a real placeholder.
 
-    def __init__(self, master, placeholder="", font=None, show="", **kwargs):
-        options = dict(bg=SLATE, fg=BONE, insertbackground=ORANGE, relief="flat",
-                       highlightthickness=1, highlightbackground=LINE, highlightcolor=ORANGE,
-                       selectbackground=ORANGE, selectforeground=KEY, disabledbackground=GRAPHITE,
-                       disabledforeground=ASH, font=font)
-        options.update(kwargs)
-        super().__init__(master, **options)
-        self._placeholder, self._show, self._showing = placeholder, show, False
-        if show:
-            self.configure(show=show)
-        # The placeholder stays visible while the field has focus and is
-        # empty; it disappears on the first typed or pasted character.
-        self.bind("<FocusIn>", lambda _e: self.after_idle(self._park_cursor), add="+")
-        self.bind("<FocusOut>", self._refresh_placeholder, add="+")
-        self.bind("<KeyPress>", self._key, add="+")
-        self.bind("<<Paste>>", lambda _e: self._clear_placeholder(), add="+")
+    The placeholder is a label drawn over the empty field, so the field's text
+    is never the placeholder. Text methods are delegated to the inner Entry.
+    """
+
+    def __init__(self, master, placeholder="", font=None, show="", textvariable=None,
+                 bg=SLATE, border=LINE, padx=12, pady=7, **kwargs):
+        super().__init__(master, bg=bg, bd=0, highlightthickness=1, highlightbackground=border,
+                         highlightcolor=border)
+        self._border = border
+        self.variable = textvariable if textvariable is not None else tk.StringVar(master)
+        self.entry = tk.Entry(self, textvariable=self.variable, bg=bg, fg=BONE, insertbackground=ORANGE,
+                              relief="flat", bd=0, highlightthickness=0, selectbackground=ORANGE,
+                              selectforeground=KEY, disabledbackground=bg, disabledforeground=ASH,
+                              font=font, show=show, **kwargs)
+        self.entry.pack(fill="both", expand=True, padx=padx, pady=pady)
+        self._padx = padx
+        self._placeholder = tk.Label(self, text=placeholder, bg=bg, fg=ASH, font=font, anchor="w",
+                                     cursor="xterm")
+        self._placeholder.bind("<Button-1>", lambda _e: self.entry.focus_set())
+        self.entry.bind("<FocusIn>", lambda _e: self._ring(True), add="+")
+        self.entry.bind("<FocusOut>", lambda _e: self._ring(False), add="+")
+        self.variable.trace_add("write", lambda *_a: self._refresh_placeholder())
         self._refresh_placeholder()
+
+    # Text API of tk.Entry, forwarded to the inner widget.
+    def get(self) -> str:
+        return self.entry.get()
+
+    def insert(self, index, text):
+        self.entry.insert(index, text)
+
+    def delete(self, first, last=None):
+        self.entry.delete(first, last)
+
+    def icursor(self, index):
+        self.entry.icursor(index)
+
+    def selection_clear(self):
+        self.entry.selection_clear()
+
+    def focus_set(self):
+        self.entry.focus_set()
+
+    focus = focus_set
+
+    def bind(self, sequence=None, func=None, add=None):
+        return self.entry.bind(sequence, func, add)
 
     def value(self) -> str:
-        return "" if self._showing else self.get()
+        return self.entry.get()
 
     def set_value(self, text: str):
-        self._clear_placeholder()
-        self.delete(0, tk.END)
-        self.insert(0, text)
-        self._refresh_placeholder()
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, text)
 
-    def _park_cursor(self):
-        if self._showing:
-            self.icursor(0)
-            self.selection_clear()
+    _ENTRY_OPTIONS = {"state", "show", "fg", "font", "textvariable", "insertbackground"}
 
-    def _key(self, event):
-        if not self._showing:
-            return None
-        if event.char and event.char.isprintable():
-            self._clear_placeholder()
-            return None
-        if event.keysym in ("BackSpace", "Delete", "Left", "Right", "Home", "End"):
-            return "break"
+    def configure(self, cnf=None, **kwargs):
+        inner = {key: kwargs.pop(key) for key in list(kwargs) if key in self._ENTRY_OPTIONS}
+        if inner:
+            self.entry.configure(**inner)
+            self._refresh_placeholder()
+        if cnf is not None or kwargs:
+            return super().configure(cnf, **kwargs)
         return None
 
-    def _clear_placeholder(self):
-        if self._showing:
-            self._showing = False
-            self.delete(0, tk.END)
-            self.configure(fg=BONE, show=self._show)
+    config = configure
 
-    def _refresh_placeholder(self, _event=None):
-        if self._showing:
-            if self.focus_get() is self or not self._placeholder:
-                return
-            self.delete(0, tk.END)
-        if self._placeholder and not self.get() and str(self.cget("state")) == "normal":
-            self._showing = True
-            self.configure(fg=ASH, show="")
-            self.insert(0, self._placeholder)
-            self.icursor(0)
+    def cget(self, key):
+        if key in self._ENTRY_OPTIONS:
+            return self.entry.cget(key)
+        return super().cget(key)
+
+    def _ring(self, focused: bool):
+        try:
+            super().configure(highlightbackground=ORANGE if focused else self._border)
+        except tk.TclError:
+            pass
+
+    def _refresh_placeholder(self):
+        try:
+            empty = not self.entry.get()
+            enabled = str(self.entry.cget("state")) == "normal"
+        except tk.TclError:
+            return
+        if self._placeholder.cget("text") and empty and enabled:
+            self._placeholder.place(x=self._padx, rely=0.5, anchor="w")
+        else:
+            self._placeholder.place_forget()
 
 
 class ScrollFrame(tk.Frame):

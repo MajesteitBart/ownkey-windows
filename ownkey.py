@@ -1682,7 +1682,7 @@ class SettingsWindow:
             remote.pack(fill="x")
             key_field = self._field(remote, "API key")
             e_api_key = self._entry(key_field.control, show="•")
-            e_api_key.pack(fill="x", ipady=5)
+            e_api_key.pack(fill="x")
             e_api_key.insert(0, cfg.get(f"{prefix}_api_key", ""))
 
             endpoint_field = self._field(remote, "Endpoint")
@@ -1795,7 +1795,7 @@ class SettingsWindow:
         folder_field = self._field(local_panel, "Model folder", "Download here, or choose a folder that already contains the extracted model files.")
         v_model_directory = tk.StringVar(win, value=str(self.app.local_models.path))
         folder_entry = brand_ui.Entry(folder_field.control, font=self.type.body, textvariable=v_model_directory)
-        folder_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        folder_entry.pack(side="left", fill="x", expand=True)
 
         def select_audio_folder():
             directory = filedialog.askdirectory(parent=win, title="Choose model download or existing model folder",
@@ -1946,12 +1946,12 @@ class SettingsWindow:
         form_inputs = tk.Frame(form, bg=brand_ui.SLATE)
         form_inputs.pack(fill="x")
         e_word = brand_ui.Entry(form_inputs, placeholder="Add a new word", font=self.type.body,
-                                highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+                                bg=brand_ui.GRAPHITE, border=brand_ui.HAIRLINE)
         e_from = brand_ui.Entry(form_inputs, placeholder="Misspelling", font=self.type.body,
-                                highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+                                bg=brand_ui.GRAPHITE, border=brand_ui.HAIRLINE)
         arrow = tk.Label(form_inputs, text="→", bg=brand_ui.SLATE, fg=brand_ui.ORANGE, font=self.type.strong)
         e_to = brand_ui.Entry(form_inputs, placeholder="Correct spelling", font=self.type.body,
-                              highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+                              bg=brand_ui.GRAPHITE, border=brand_ui.HAIRLINE)
         form_actions = tk.Frame(form, bg=brand_ui.SLATE)
         form_actions.pack(fill="x", pady=(10, 0))
         form_error = tk.Label(form_actions, text="", bg=brand_ui.SLATE, fg=brand_ui.RED, font=self.type.small, anchor="w")
@@ -1963,12 +1963,12 @@ class SettingsWindow:
             for widget in (e_word, e_from, arrow, e_to):
                 widget.pack_forget()
             if v_correction.get():
-                e_from.pack(side="left", fill="x", expand=True, ipady=5)
+                e_from.pack(side="left", fill="x", expand=True)
                 arrow.pack(side="left", padx=8)
-                e_to.pack(side="left", fill="x", expand=True, ipady=5)
+                e_to.pack(side="left", fill="x", expand=True)
                 e_from.focus_set()
             else:
-                e_word.pack(side="left", fill="x", expand=True, ipady=5)
+                e_word.pack(side="left", fill="x", expand=True)
                 e_word.focus_set()
             form_error.configure(text="")
 
@@ -2018,7 +2018,10 @@ class SettingsWindow:
                 child.destroy()
             words = [e for e in entries if "word" in e]
             fixes = [e for e in entries if "from" in e]
-            count_label.configure(text=f"{len(words)} words · {len(fixes)} corrections" if entries else "Vocabulary")
+            def plural(count, noun):
+                return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+            count_label.configure(text=f"{plural(len(words), 'word')} · {plural(len(fixes), 'correction')}" if entries else "Vocabulary")
             if not entries:
                 tk.Label(list_holder, text="Nothing here yet. Add names, products, and terms the recognizer gets wrong.",
                          bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w", justify="left", wraplength=520,
@@ -2077,8 +2080,8 @@ class SettingsWindow:
             language_toggles[code] = self._toggle(control, v_filler_languages[code], render_preview)
             language_toggles[code].pack()
         custom_field = self._field(card, "Extra words to remove", "Comma-separated, whole words only. Handy for a personal tic such as \"basically\".")
-        e_custom_fillers = self._entry(custom_field.control)
-        e_custom_fillers.pack(fill="x", ipady=5)
+        e_custom_fillers = self._entry(custom_field.control, placeholder="basically, actually")
+        e_custom_fillers.pack(fill="x")
         e_custom_fillers.insert(0, cfg.get("custom_fillers", ""))
         e_custom_fillers.bind("<KeyRelease>", render_preview, add="+")
         custom_field.pack_configure(pady=(0, 0))
@@ -2117,7 +2120,7 @@ class SettingsWindow:
         self._toggle(self._row(card, "Smart formatting", "Paragraphs and bullet lists where the content asks for them."), v_formatting).pack()
         custom_field = self._field(card, "Custom instructions")
         e_custom = self._entry(custom_field.control, placeholder="Never use em dashes. Keep greetings.")
-        e_custom.pack(fill="x", ipady=5)
+        e_custom.pack(fill="x")
         e_custom.set_value(cfg.get("rewrite_custom_instructions", ""))
 
         card = self._card(page).inner
