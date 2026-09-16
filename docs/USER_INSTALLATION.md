@@ -26,7 +26,8 @@ OpenRouter, a custom OpenAI-compatible server, or local Ollama.
 6. On the **Transcription** page choose **Local (Orukeet)** and click
    **Download**. Wait until the status reads **Installed · Not active** before
    you continue; saving while the download is still running fails. Or pick a
-   cloud provider and enter its API key.
+   cloud provider, enter its API key, click **Refresh**, and choose a
+   transcription model.
 7. Optionally set up a **Rewriting** provider: enter the key, refresh the model
    list, and choose a model.
 8. On the **Dictionary** page add your name and the terms you use, so they are
