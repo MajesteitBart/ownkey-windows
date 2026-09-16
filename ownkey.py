@@ -19,6 +19,7 @@ import threading
 import time
 import wave
 import ctypes
+import tempfile
 from ctypes import wintypes
 from urllib.parse import urlparse
 
@@ -55,6 +56,18 @@ from providers import (
     provider_requires_key,
     transcribe_audio,
 )
+from local_models import BUSY_STAGES, MODEL_ID, ORUKEET, LocalModelManager, ModelError
+from local_transcription import LocalTranscriber, SAMPLE_RATE
+import brand_ui
+from text_cleanup import (
+    FILLER_LANGUAGES,
+    clean_transcript,
+    filler_words,
+    normalize_corrections,
+    normalize_filler_languages,
+    normalize_vocabulary,
+    remove_fillers,
+)
 
 try:
     from pynput import keyboard as pynput_keyboard
@@ -88,7 +101,7 @@ except ImportError:
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import ttk, messagebox, filedialog
 except ImportError:
     sys.exit("Missing: tkinter (usually bundled with Python)")
 
@@ -119,6 +132,8 @@ DEFAULT_CONFIG = {
     "paste_mode": True,
     "ready_chime": False,
     "sample_rate": 16000,
+    "local_model_idle_timeout_minutes": 20,
+    "local_model_directory": "",
     "rewrite_provider": "mistral",
     "rewrite_api_key": "",
     "rewrite_endpoint": "https://api.mistral.ai/v1/chat/completions",
@@ -128,6 +143,11 @@ DEFAULT_CONFIG = {
     "rewrite_formatting": True,
     "rewrite_custom_instructions": "",
     "rewrite_hotkey": "right ctrl",
+    "vocabulary": [],
+    "corrections": [],
+    "remove_fillers": True,
+    "filler_languages": ["en", "nl"],
+    "custom_fillers": "",
 }
 
 HOTKEY_LIST = [
@@ -408,25 +428,62 @@ def load_config() -> dict:
         cfg["audio_provider"] = "mistral"
         cfg["audio_endpoint"] = DEFAULT_CONFIG["audio_endpoint"]
         cfg["audio_model"] = DEFAULT_CONFIG["audio_model"]
+    # Retired local rewriting must never silently switch existing users to cloud edits.
+    if str(cfg.get("rewrite_provider", "")).strip().lower() in {"local_rewrite", "local (small llm)"}:
+        for key in ("rewrite_provider", "rewrite_api_key", "rewrite_endpoint", "rewrite_model"):
+            cfg[key] = DEFAULT_CONFIG[key]
+        cfg["auto_rewrite"] = False
+        cfg["rewrite_hotkey"] = "off"
+    cfg.pop("local_rewrite_directory", None)
+    cfg.pop("local_rewrite_idle_timeout_minutes", None)
     cfg["rewrite_provider"] = normalize_provider(cfg.get("rewrite_provider"), "mistral")
+    if cfg["rewrite_provider"] not in REWRITE_PROVIDER_IDS:
+        cfg["rewrite_provider"] = DEFAULT_CONFIG["rewrite_provider"]
+        cfg["rewrite_endpoint"] = DEFAULT_CONFIG["rewrite_endpoint"]
+        cfg["rewrite_model"] = DEFAULT_CONFIG["rewrite_model"]
+    try:
+        idle_minutes = float(cfg.get("local_model_idle_timeout_minutes", 20))
+        if not math.isfinite(idle_minutes) or idle_minutes < 0:
+            raise ValueError("Invalid idle timeout")
+        cfg["local_model_idle_timeout_minutes"] = idle_minutes
+    except (TypeError, ValueError):
+        cfg["local_model_idle_timeout_minutes"] = 20
+    if not isinstance(cfg.get("local_model_directory"), str):
+        cfg["local_model_directory"] = ""
     cfg["hotkey"] = sanitize_hotkey(cfg.get("hotkey"))
     cfg["language"] = sanitize_language(cfg.get("language"))
     cfg["rewrite_tone"] = sanitize_rewrite_tone(cfg.get("rewrite_tone"))
     cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(cfg.get("rewrite_hotkey"), cfg["hotkey"])
+    cfg["vocabulary"] = normalize_vocabulary(cfg.get("vocabulary"))
+    cfg["corrections"] = normalize_corrections(cfg.get("corrections"))
+    cfg["remove_fillers"] = bool(cfg.get("remove_fillers", True))
+    cfg["filler_languages"] = normalize_filler_languages(cfg.get("filler_languages"))
+    cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    """Persist config to disk."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    if os.name == "posix":
-        fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        fh = os.fdopen(fd, "w", encoding="utf-8")
-    else:
-        fh = open(CONFIG_FILE, "w", encoding="utf-8")
-    with fh:
-        json.dump(cfg, fh, indent=2)
+    """Replace config only after a complete, flushed write succeeds."""
+    directory = os.path.dirname(os.path.abspath(CONFIG_FILE))
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".config-", suffix=".tmp", delete=False) as fh:
+            temporary = fh.name
+            if os.name == "posix":
+                os.fchmod(fh.fileno(), 0o600)
+            json.dump(cfg, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, CONFIG_FILE)
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def audio_sample_rate(cfg):
+    return SAMPLE_RATE if cfg.get("audio_provider") == "orukeet" else int(cfg.get("sample_rate", 16000))
 
 
 # ---------------------------------------------------------------------------
@@ -1235,8 +1292,13 @@ def audio_duration_seconds(audio_frames: list, sample_rate: int) -> float:
 # Transcription
 # ---------------------------------------------------------------------------
 
-def transcribe(wav_bytes: bytes, cfg: dict) -> str:
+def transcribe(wav_bytes: bytes, cfg: dict, local_attempt=None, on_loading=None) -> str:
     """Transcribe WAV audio with the independently selected audio provider."""
+    vocabulary = normalize_vocabulary(cfg.get("vocabulary"))
+    if cfg.get("audio_provider") == "orukeet":
+        if local_attempt is None:
+            raise ModelError("Local model is not ready. Open Settings > Transcription and try again.")
+        return local_attempt.transcribe(wav_bytes, on_loading=on_loading, vocabulary=vocabulary)
     return transcribe_audio(
         cfg.get("audio_provider", DEFAULT_CONFIG["audio_provider"]),
         get_effective_api_key(cfg),
@@ -1244,6 +1306,7 @@ def transcribe(wav_bytes: bytes, cfg: dict) -> str:
         cfg.get("audio_model", DEFAULT_CONFIG["audio_model"]),
         wav_bytes,
         cfg.get("language", DEFAULT_CONFIG["language"]),
+        vocabulary,
     )
 
 
@@ -1377,23 +1440,115 @@ def type_text(text: str, paste_mode: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Settings window (tkinter, dark theme)
+# Settings window (tkinter, brand_ui)
 # ---------------------------------------------------------------------------
 
 class SettingsWindow:
-    """Brand-styled tkinter settings dialog (Ownkey brand book)."""
+    """Ownkey settings: sidebar pages styled after ownkey.bvdm.ai (brand_ui)."""
 
-    BG = BRAND_KEY
-    FG = BRAND_BONE
-    MUTED = BRAND_ASH
-    ENTRY_BG = BRAND_SLATE
-    LINE = BRAND_LINE
-    ACCENT = BRAND_ORANGE
-    BTN_BG = BRAND_SLATE
+    PAGES = (
+        ("dictation", "Dictation", "Hold the key, speak, release. The text lands where your cursor is."),
+        ("transcription", "Transcription", "Where your voice becomes text: on this PC with Orukeet, or through a provider with your own key."),
+        ("dictionary", "Dictionary", "Names and terms typed the way you spell them."),
+        ("fillers", "Filler words", "Clean hesitations out of dictation without an AI model."),
+        ("rewriting", "Rewriting", "Optional AI polish for dictation, and voice edits for selected text."),
+    )
+    FILLER_SAMPLE = "Um, I think, uh, we should ehm ship it on Tuesday. Er is nog één ding."
 
     def __init__(self, app: "OwnkeyApp"):
         self.app = app
         self._win: tk.Toplevel | None = None
+        self._model_updates = None
+        self._save_cancel = None
+        self._model_poll_id = None
+        self._save_poll_id = None
+        self.pages: dict[str, tk.Frame] = {}
+        self.current_page = None
+        self._nav = {}
+
+    # ------------------------------------------------------------------
+    # Layout helpers
+    # ------------------------------------------------------------------
+
+    def _card(self, parent, pady=(0, 16)):
+        card = brand_ui.Card(parent)
+        card.pack(fill="x", pady=pady)
+        return card
+
+    def _row(self, parent, title, description="", *, last=False):
+        """Title and description on the left, a control holder on the right."""
+        holder = tk.Frame(parent, bg=parent.cget("bg"))
+        holder.pack(fill="x", pady=(2, 2))
+        control = tk.Frame(holder, bg=parent.cget("bg"))
+        control.pack(side="right", padx=(16, 0))
+        text = tk.Frame(holder, bg=parent.cget("bg"))
+        text.pack(side="left", fill="x", expand=True)
+        tk.Label(text, text=title, bg=parent.cget("bg"), fg=brand_ui.BONE, anchor="w",
+                 font=self.type.body).pack(fill="x")
+        if description:
+            tk.Label(text, text=description, bg=parent.cget("bg"), fg=brand_ui.ASH, anchor="w",
+                     justify="left", wraplength=400, font=self.type.small).pack(fill="x", pady=(1, 0))
+        if not last:
+            brand_ui.divider(parent, pady=(8, 8))
+        return control
+
+    def _field(self, parent, label, description=""):
+        """Label above a full-width control holder."""
+        holder = tk.Frame(parent, bg=parent.cget("bg"))
+        holder.pack(fill="x", pady=(0, 12))
+        tk.Label(holder, text=label, bg=parent.cget("bg"), fg=brand_ui.ASH, anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 4))
+        control = tk.Frame(holder, bg=parent.cget("bg"))
+        control.pack(fill="x")
+        if description:
+            tk.Label(holder, text=description, bg=parent.cget("bg"), fg=brand_ui.ASH, anchor="w",
+                     justify="left", wraplength=520, font=self.type.small).pack(fill="x", pady=(4, 0))
+        holder.control = control
+        return holder
+
+    def _combo(self, parent, values, state="readonly", width=None):
+        var = tk.StringVar(self._win)
+        widget = ttk.Combobox(parent, textvariable=var, values=values, state=state, font=self.type.body)
+        if width:
+            widget.configure(width=width)
+        return var, widget
+
+    def _entry(self, parent, placeholder="", show=""):
+        return brand_ui.Entry(parent, placeholder=placeholder, show=show, font=self.type.body)
+
+    def _button(self, parent, text, command=None, variant="ghost", **kwargs):
+        return brand_ui.Button(parent, text, command, variant=variant, font=self.type.button, **kwargs)
+
+    def _toggle(self, parent, variable, command=None):
+        return brand_ui.Toggle(parent, variable, command)
+
+    def _heading(self, parent, text, tag=None):
+        holder = tk.Frame(parent, bg=parent.cget("bg"))
+        holder.pack(fill="x", pady=(0, 10))
+        tk.Label(holder, text=text, bg=parent.cget("bg"), fg=brand_ui.BONE, anchor="w",
+                 font=self.type.heading).pack(side="left")
+        if tag:
+            brand_ui.Tag(holder, tag, self.type.mono).pack(side="left", padx=(14, 0), pady=(3, 0))
+        return holder
+
+    def show_page(self, name: str) -> None:
+        if self._win is None or name not in self.pages:
+            return
+        for key, page in self.pages.items():
+            if key != name:
+                page.pack_forget()
+        self.pages[name].pack(fill="x")
+        for key, item in self._nav.items():
+            item.set_active(key == name)
+        title, lead = next((t, l) for k, t, l in self.PAGES if k == name)
+        self._title.configure(text=title)
+        self._lead.configure(text=lead)
+        self._body.scroll_top()
+        self.current_page = name
+
+    # ------------------------------------------------------------------
+    # Window
+    # ------------------------------------------------------------------
 
     def open(self) -> None:
         if self._win is not None:
@@ -1405,249 +1560,142 @@ class SettingsWindow:
                 self._win = None
 
         cfg = self.app.cfg
+        brand_ui.load_fonts(resource_path("assets", "fonts"))
 
         win = tk.Toplevel(self.app._ui_root)
         self._win = win
+        self._save_cancel = threading.Event()
+        save_cancel = self._save_cancel
         win.title(f"{APP_NAME} — Settings")
-        win.geometry("680x610")
-        win.minsize(620, 560)
+        win.geometry("920x700")
+        win.minsize(840, 580)
         win.resizable(True, True)
-        win.configure(bg=self.BG)
+        win.configure(bg=brand_ui.KEY)
         win.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.type = brand_ui.Type(win)
+        brand_ui.style_ttk(win, self.type)
+        self.pages = {}
+        self._nav = {}
 
-        # Window/taskbar icon: the brand monkey mark.
         try:
             from PIL import ImageTk
 
             self._icon_photo = ImageTk.PhotoImage(make_icon("idle"), master=win)
             win.iconphoto(True, self._icon_photo)
+            mark = make_icon("recording").resize((30, 30), Image.LANCZOS)
+            self._logo_photo = ImageTk.PhotoImage(mark, master=win)
         except Exception:
-            pass
+            self._logo_photo = None
 
-        # Mono font for spec-style labels, per the brand's type system.
-        try:
-            import tkinter.font as tkfont
+        # ---- sidebar -------------------------------------------------
+        sidebar = tk.Frame(win, bg=brand_ui.KEY, width=212)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        tk.Frame(win, width=1, bg=brand_ui.LINE).pack(side="left", fill="y")
 
-            families = set(tkfont.families(win))
-        except Exception:
-            families = set()
-        mono = next(
-            (f for f in ("JetBrains Mono", "Cascadia Mono", "Consolas") if f in families),
-            "Courier New",
-        )
+        logo = tk.Frame(sidebar, bg=brand_ui.KEY)
+        logo.pack(fill="x", padx=22, pady=(24, 4))
+        if self._logo_photo is not None:
+            tk.Label(logo, image=self._logo_photo, bg=brand_ui.KEY).pack(side="left", padx=(0, 10))
+        tk.Label(logo, text="ownkey", bg=brand_ui.KEY, fg=brand_ui.BONE, font=self.type.wordmark).pack(side="left")
+        brand_ui.Tag(sidebar, "Settings", self.type.mono).pack(anchor="w", padx=22, pady=(2, 18))
 
-        pad = {"padx": 14, "pady": 6}
+        nav = tk.Frame(sidebar, bg=brand_ui.KEY)
+        nav.pack(fill="x", padx=12)
+        for key, title, _lead in self.PAGES:
+            item = brand_ui.NavItem(nav, title, lambda k=key: self.show_page(k), self.type.nav)
+            item.pack(fill="x", pady=1)
+            self._nav[key] = item
 
-        def label(parent, text, row):
-            tk.Label(parent, text=text, bg=self.BG, fg=self.MUTED, anchor="w",
-                     font=("Segoe UI", 10)).grid(row=row, column=0, sticky="w", **pad)
+        import webbrowser
+        foot = tk.Frame(sidebar, bg=brand_ui.KEY)
+        foot.pack(side="bottom", fill="x", padx=22, pady=20)
+        tk.Label(foot, text="Private by default.", bg=brand_ui.KEY, fg=brand_ui.ASH,
+                 font=self.type.small, anchor="w").pack(fill="x")
+        site = tk.Label(foot, text="ownkey.bvdm.ai", bg=brand_ui.KEY, fg=brand_ui.ASH,
+                        font=self.type.mono_body, anchor="w", cursor="hand2")
+        site.pack(fill="x", pady=(2, 0))
+        site.bind("<Button-1>", lambda _e: webbrowser.open("https://ownkey.bvdm.ai"))
+        site.bind("<Enter>", lambda _e: site.configure(fg=brand_ui.ORANGE))
+        site.bind("<Leave>", lambda _e: site.configure(fg=brand_ui.ASH))
 
-        def entry(parent, row, show=None):
-            widget = tk.Entry(
-                parent,
-                bg=self.ENTRY_BG,
-                fg=self.FG,
-                insertbackground=self.ACCENT,
-                relief="flat",
-                show=show or "",
-                highlightthickness=1,
-                highlightbackground=self.LINE,
-                highlightcolor=self.ACCENT,
-                font=("Segoe UI", 10),
-            )
-            widget.grid(row=row, column=1, sticky="ew", ipady=4, **pad)
-            return widget
+        # ---- main column --------------------------------------------
+        main = tk.Frame(win, bg=brand_ui.KEY)
+        main.pack(side="left", fill="both", expand=True)
 
-        def combo(parent, values, row, state="readonly"):
-            var = tk.StringVar(win)
-            widget = ttk.Combobox(
-                parent,
-                textvariable=var,
-                values=values,
-                state=state,
-                font=("Segoe UI", 10),
-            )
-            widget.grid(row=row, column=1, sticky="ew", **pad)
-            return var, widget
+        footer = tk.Frame(main, bg=brand_ui.KEY)
+        footer.pack(side="bottom", fill="x")
+        tk.Frame(footer, height=1, bg=brand_ui.LINE).pack(fill="x")
+        actions = tk.Frame(footer, bg=brand_ui.KEY)
+        actions.pack(fill="x", padx=28, pady=14)
 
-        def section(parent, text, row, top_pad=18):
-            holder = tk.Frame(parent, bg=self.BG)
-            holder.grid(row=row, column=0, columnspan=2, sticky="w",
-                        padx=14, pady=(top_pad, 4))
-            tk.Frame(holder, width=7, height=7, bg=self.ACCENT).pack(side="left")
-            tk.Label(holder, text="  " + " ".join(text.upper()), bg=self.BG,
-                     fg=self.MUTED, font=(mono, 8)).pack(side="left")
+        header = tk.Frame(main, bg=brand_ui.KEY)
+        header.pack(fill="x", padx=28, pady=(26, 14))
+        self._title = tk.Label(header, text="", bg=brand_ui.KEY, fg=brand_ui.BONE, anchor="w",
+                               font=self.type.title)
+        self._title.pack(fill="x")
+        self._lead = tk.Label(header, text="", bg=brand_ui.KEY, fg=brand_ui.ASH, anchor="w",
+                              justify="left", wraplength=620, font=self.type.body)
+        self._lead.pack(fill="x", pady=(4, 0))
 
-        def hint(parent, text, row):
-            tk.Label(
-                parent,
-                text=text,
-                bg=self.BG,
-                fg=self.MUTED,
-                justify="left",
-                anchor="w",
-                wraplength=600,
-                font=("Segoe UI", 9),
-            ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 8))
+        self._body = brand_ui.ScrollFrame(main, bg=brand_ui.KEY)
+        self._body.pack(fill="both", expand=True, padx=(28, 16))
+        for key, _title, _lead in self.PAGES:
+            self.pages[key] = tk.Frame(self._body.content, bg=brand_ui.KEY)
 
-        # Style combobox to match the brand theme (best-effort under clam)
-        style = ttk.Style(win)
-        style.theme_use("clam")
-        style.configure("TCombobox",
-                        fieldbackground=self.ENTRY_BG,
-                        background=self.ENTRY_BG,
-                        bordercolor=self.LINE,
-                        arrowcolor=self.MUTED,
-                        lightcolor=self.ENTRY_BG,
-                        darkcolor=self.ENTRY_BG,
-                        foreground=self.FG,
-                        selectbackground=self.ACCENT,
-                        selectforeground=BRAND_KEY)
-        style.map("TCombobox",
-                  fieldbackground=[("readonly", self.ENTRY_BG)],
-                  foreground=[("readonly", self.FG)],
-                  selectbackground=[("readonly", self.ENTRY_BG)],
-                  selectforeground=[("readonly", self.FG)])
-        style.configure(
-            "Ownkey.TNotebook",
-            background=self.BG,
-            borderwidth=0,
-            tabmargins=(14, 8, 14, 0),
-        )
-        style.configure(
-            "Ownkey.TNotebook.Tab",
-            background=self.ENTRY_BG,
-            foreground=self.MUTED,
-            padding=(18, 8),
-            borderwidth=0,
-        )
-        style.map(
-            "Ownkey.TNotebook.Tab",
-            background=[("selected", self.LINE)],
-            foreground=[("selected", self.FG)],
-        )
-        win.option_add("*TCombobox*Listbox.background", self.ENTRY_BG)
-        win.option_add("*TCombobox*Listbox.foreground", self.FG)
-        win.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
-        win.option_add("*TCombobox*Listbox.selectForeground", BRAND_KEY)
-
-        # Header: wordmark + mono subtitle
-        header = tk.Frame(win, bg=self.BG)
-        header.pack(fill="x", padx=14, pady=(16, 8))
-        tk.Label(header, text="own", bg=self.BG, fg=self.FG,
-                 font=("Segoe UI", 17, "bold")).pack(side="left")
-        tk.Label(header, text="key", bg=self.BG, fg=self.ACCENT,
-                 font=("Segoe UI", 17, "bold")).pack(side="left")
-        tk.Label(header, text="   S E T T I N G S", bg=self.BG, fg=self.MUTED,
-                 font=(mono, 9)).pack(side="left", pady=(6, 0))
-
-        notebook = ttk.Notebook(win, style="Ownkey.TNotebook")
-        notebook.pack(fill="both", expand=True)
-        general_tab = tk.Frame(notebook, bg=self.BG)
-        audio_tab = tk.Frame(notebook, bg=self.BG)
-        rewrite_tab = tk.Frame(notebook, bg=self.BG)
-        notebook.add(general_tab, text="General")
-        notebook.add(audio_tab, text="Audio")
-        notebook.add(rewrite_tab, text="Rewriting")
-        for tab in (general_tab, audio_tab, rewrite_tab):
-            tab.columnconfigure(1, weight=1)
-
-        general_row = 0
-        section(general_tab, "Dictation", general_row, top_pad=16)
-        general_row += 1
-
-        label(general_tab, "Hotkey", general_row)
-        v_hotkey, c_hotkey = combo(general_tab, HOTKEY_LIST, general_row)
+        # ---- Dictation ----------------------------------------------
+        page = self.pages["dictation"]
+        card = self._card(page).inner
+        self._heading(card, "Push to talk", "Hotkey")
+        control = self._row(card, "Dictation key", "Hold to record, release to type.")
         hotkey_value = sanitize_hotkey(cfg.get("hotkey", DEFAULT_CONFIG["hotkey"]))
+        v_hotkey, c_hotkey = self._combo(control, HOTKEY_LIST, width=14)
         v_hotkey.set(hotkey_value)
-        c_hotkey.current(HOTKEY_LIST.index(hotkey_value))
-        general_row += 1
+        c_hotkey.pack()
 
         v_paste = tk.BooleanVar(win, value=cfg.get("paste_mode", True))
-        cb_paste = tk.Checkbutton(general_tab, text="Paste mode (faster)",
-                                  variable=v_paste,
-                                  bg=self.BG, fg=self.FG,
-                                  selectcolor=self.ENTRY_BG,
-                                  activebackground=self.BG, activeforeground=self.FG)
+        control = self._row(card, "Paste mode", "Insert text through the clipboard. Faster, and more reliable in most apps.")
+        t_paste = self._toggle(control, v_paste)
+        t_paste.pack()
         if sys.platform.startswith("linux") and linux_desktop.is_wayland():
             v_paste.set(True)
-            cb_paste.configure(text="Clipboard paste (required on Wayland)", state="disabled")
-        cb_paste.grid(row=general_row, column=1, sticky="w", **pad)
-        general_row += 1
+            t_paste.set_enabled(False)
 
-        v_ready_chime = tk.BooleanVar(
-            win, value=bool(cfg.get("ready_chime", DEFAULT_CONFIG["ready_chime"]))
-        )
-        cb_ready_chime = tk.Checkbutton(
-            general_tab,
-            text="Play ready chime",
-            variable=v_ready_chime,
-            bg=self.BG, fg=self.FG,
-            selectcolor=self.ENTRY_BG,
-            activebackground=self.BG, activeforeground=self.FG,
-        )
-        cb_ready_chime.grid(row=general_row, column=1, sticky="w", **pad)
-        general_row += 1
+        v_ready_chime = tk.BooleanVar(win, value=bool(cfg.get("ready_chime", DEFAULT_CONFIG["ready_chime"])))
+        self._toggle(self._row(card, "Ready chime", "A short ping when the microphone is armed."), v_ready_chime).pack()
 
         v_startup = tk.BooleanVar(win, value=is_startup_enabled())
-        cb_startup = tk.Checkbutton(general_tab, text="Start at login",
-                                    variable=v_startup,
-                                    bg=self.BG, fg=self.FG,
-                                    selectcolor=self.ENTRY_BG,
-                                    activebackground=self.BG, activeforeground=self.FG)
-        cb_startup.grid(row=general_row, column=1, sticky="w", **pad)
+        self._toggle(self._row(card, "Start at login", "Ownkey waits in the tray when you sign in.", last=True), v_startup).pack()
 
-        def build_provider_controls(parent, activity, provider_ids, row):
+        # ---- provider controls (shared) ------------------------------
+        def build_provider_controls(parent, activity, provider_ids):
             prefix = "audio" if activity == "audio" else "rewrite"
-            provider_value = normalize_provider(
-                cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"])
-            )
+            provider_value = normalize_provider(cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"]))
             labels = provider_labels(provider_ids)
 
-            label(parent, "Provider", row)
-            v_provider, c_provider = combo(parent, labels, row)
+            provider_field = self._field(parent, "Provider")
+            v_provider, c_provider = self._combo(provider_field.control, labels)
             v_provider.set(provider_label(provider_value))
-            row += 1
+            c_provider.pack(fill="x")
 
-            label(parent, "API key", row)
-            e_api_key = entry(parent, row, show="•")
+            remote = tk.Frame(parent, bg=parent.cget("bg"))
+            remote.pack(fill="x")
+            key_field = self._field(remote, "API key")
+            e_api_key = self._entry(key_field.control, show="•")
+            e_api_key.pack(fill="x", ipady=5)
             e_api_key.insert(0, cfg.get(f"{prefix}_api_key", ""))
-            row += 1
 
-            label(parent, "Endpoint", row)
-            v_endpoint, c_endpoint = combo(parent, provider_endpoints(provider_value, activity), row, "normal")
-            v_endpoint.set(
-                cfg.get(f"{prefix}_endpoint", DEFAULT_CONFIG[f"{prefix}_endpoint"])
-            )
-            row += 1
+            endpoint_field = self._field(remote, "Endpoint")
+            v_endpoint, c_endpoint = self._combo(endpoint_field.control, provider_endpoints(provider_value, activity), "normal")
+            v_endpoint.set(cfg.get(f"{prefix}_endpoint", DEFAULT_CONFIG[f"{prefix}_endpoint"]))
+            c_endpoint.pack(fill="x")
 
-            label(parent, "Model", row)
-            model_holder = tk.Frame(parent, bg=self.BG)
-            model_holder.grid(row=row, column=1, sticky="ew", **pad)
-            model_holder.columnconfigure(0, weight=1)
-            v_model = tk.StringVar(win)
-            c_model = ttk.Combobox(
-                model_holder,
-                textvariable=v_model,
-                state="normal",
-                font=("Segoe UI", 10),
-            )
-            c_model.grid(row=0, column=0, sticky="ew")
+            model_field = self._field(remote, "Model")
+            v_model, c_model = self._combo(model_field.control, (), "normal")
+            c_model.pack(side="left", fill="x", expand=True)
             v_model.set(cfg.get(f"{prefix}_model", DEFAULT_CONFIG[f"{prefix}_model"]))
-
-            refresh_button = tk.Button(
-                model_holder,
-                text="Refresh",
-                bg=self.BTN_BG,
-                fg=self.FG,
-                activebackground=self.LINE,
-                activeforeground=self.FG,
-                relief="flat",
-                cursor="hand2",
-                padx=12,
-                pady=3,
-            )
-            refresh_button.grid(row=0, column=1, padx=(8, 0))
+            refresh_button = self._button(model_field.control, "Refresh", padx=14, pady=5)
+            refresh_button.pack(side="left", padx=(8, 0))
 
             def selected_provider():
                 return normalize_provider(v_provider.get(), provider_value)
@@ -1660,8 +1708,10 @@ class SettingsWindow:
                 # Credentials are provider-specific. Never carry a key into a
                 # newly selected provider where it could be sent accidentally.
                 e_api_key.delete(0, tk.END)
-                v_model.set("")
+                v_model.set(MODEL_ID if provider_id == "orukeet" else "")
                 c_model.configure(values=())
+                if activity == "audio":
+                    update_local_visibility()
 
             def fetch_models():
                 provider_id = selected_provider()
@@ -1672,9 +1722,7 @@ class SettingsWindow:
 
                 def worker():
                     try:
-                        models = list_available_models(
-                            provider_id, api_key, endpoint, activity
-                        )
+                        models = list_available_models(provider_id, api_key, endpoint, activity)
                         result_queue.put(("loaded", models))
                     except Exception as exc:
                         result_queue.put(("failed", str(exc)))
@@ -1695,17 +1743,9 @@ class SettingsWindow:
                     if status == "loaded":
                         c_model.configure(values=payload)
                         if not payload:
-                            messagebox.showinfo(
-                                APP_NAME,
-                                f"No models were returned by {provider_label(provider_id)}.",
-                                parent=win,
-                            )
+                            messagebox.showinfo(APP_NAME, f"No models were returned by {provider_label(provider_id)}.", parent=win)
                     else:
-                        messagebox.showerror(
-                            APP_NAME,
-                            f"Could not retrieve models:\n{payload}",
-                            parent=win,
-                        )
+                        messagebox.showerror(APP_NAME, f"Could not retrieve models:\n{payload}", parent=win)
 
                 threading.Thread(target=worker, daemon=True).start()
                 self.app._ui_root.after(50, poll_result)
@@ -1717,98 +1757,393 @@ class SettingsWindow:
                 "api_key": e_api_key,
                 "endpoint": v_endpoint,
                 "model": v_model,
-            }, row + 1
+                "remote": remote,
+                "provider_field": provider_field,
+            }
 
-        audio_row = 0
-        section(audio_tab, "Audio transcription", audio_row, top_pad=16)
-        audio_row += 1
-        hint(
-            audio_tab,
-            "Used for dictation and spoken rewrite instructions. Custom endpoints must "
-            "support OpenAI-compatible audio transcription. Enter the full endpoint URL.",
-            audio_row,
-        )
-        audio_row += 1
-        audio_controls, audio_row = build_provider_controls(
-            audio_tab, "audio", AUDIO_PROVIDER_IDS, audio_row
-        )
-
-        label(audio_tab, "Language", audio_row)
-        v_lang, c_lang = combo(audio_tab, LANGUAGE_LIST, audio_row)
+        # ---- Transcription ------------------------------------------
+        page = self.pages["transcription"]
+        provider_card = self._card(page)
+        card = provider_card.inner
+        self._heading(card, "Speech to text", "Audio")
+        audio_controls = build_provider_controls(card, "audio", AUDIO_PROVIDER_IDS)
+        language_field = self._field(card, "Language", "Auto works for most people. Set a language when the audio provider keeps guessing wrong.")
         language_value = sanitize_language(cfg.get("language", DEFAULT_CONFIG["language"]))
+        v_lang, c_lang = self._combo(language_field.control, LANGUAGE_LIST)
         v_lang.set(language_value)
-        c_lang.current(LANGUAGE_LIST.index(language_value))
+        c_lang.pack(fill="x")
+        language_field.pack_configure(pady=(0, 2))
 
-        rewrite_row = 0
-        section(rewrite_tab, "AI Rewrite", rewrite_row, top_pad=16)
-        rewrite_row += 1
-        hint(
-            rewrite_tab,
-            "Uses its own provider, key, endpoint, and model. For custom providers, enter "
-            "the full endpoint URL and a model ID, or use Refresh to fetch models. "
-            "Leave the key blank if your custom server does not require one.",
-            rewrite_row,
-        )
-        rewrite_row += 1
-        rewrite_controls, rewrite_row = build_provider_controls(
-            rewrite_tab, "rewrite", REWRITE_PROVIDER_IDS, rewrite_row
-        )
+        local_card = self._card(page)
+        local_panel = local_card.inner
+        self._heading(local_panel, "Orukeet on this PC", "Local · INT8 · 487 MB download")
+        tk.Label(local_panel, text="Orukeet by Oruk AI, based on NVIDIA Parakeet TDT 0.6B v3. Audio never leaves this PC. "
+                 "Rewriting still sends text to your rewrite provider; for offline use, choose local Ollama or turn rewriting off.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
 
-        v_auto_rewrite = tk.BooleanVar(
-            win, value=bool(cfg.get("auto_rewrite", DEFAULT_CONFIG["auto_rewrite"]))
-        )
-        cb_auto_rewrite = tk.Checkbutton(
-            rewrite_tab,
-            text="Auto-rewrite dictation (filler words, grammar, tone)",
-            variable=v_auto_rewrite,
-            bg=self.BG, fg=self.FG,
-            selectcolor=self.ENTRY_BG,
-            activebackground=self.BG, activeforeground=self.FG,
-        )
-        cb_auto_rewrite.grid(row=rewrite_row, column=0, columnspan=2, sticky="w", **pad)
-        rewrite_row += 1
+        local_status = tk.StringVar(win, value="Not downloaded")
+        tk.Label(local_panel, textvariable=local_status, wraplength=560, justify="left", bg=brand_ui.GRAPHITE,
+                 fg=brand_ui.BONE, anchor="w", font=self.type.strong).pack(fill="x", pady=(0, 6))
+        local_progress = ttk.Progressbar(local_panel, mode="determinate", maximum=100, style="Ownkey.Horizontal.TProgressbar")
+        local_progress.pack(fill="x", pady=(0, 8))
+        local_actions = tk.Frame(local_panel, bg=brand_ui.GRAPHITE)
+        local_actions.pack(fill="x", pady=(0, 14))
+        selected_audio = [self.app.local_models, self.app.local_transcriber]
+        saving = [False]
 
-        label(rewrite_tab, "Tone", rewrite_row)
-        v_tone, c_tone = combo(rewrite_tab, REWRITE_TONE_LIST, rewrite_row)
-        tone_value = sanitize_rewrite_tone(cfg.get("rewrite_tone", DEFAULT_CONFIG["rewrite_tone"]))
-        v_tone.set(tone_value)
-        c_tone.current(REWRITE_TONE_LIST.index(tone_value))
-        rewrite_row += 1
+        folder_field = self._field(local_panel, "Model folder", "Download here, or choose a folder that already contains the extracted model files.")
+        v_model_directory = tk.StringVar(win, value=str(self.app.local_models.path))
+        folder_entry = brand_ui.Entry(folder_field.control, font=self.type.body, textvariable=v_model_directory)
+        folder_entry.pack(side="left", fill="x", expand=True, ipady=5)
 
-        v_formatting = tk.BooleanVar(
-            win, value=bool(cfg.get("rewrite_formatting", DEFAULT_CONFIG["rewrite_formatting"]))
-        )
-        cb_formatting = tk.Checkbutton(
-            rewrite_tab,
-            text="Smart formatting (paragraphs, bullet lists)",
-            variable=v_formatting,
-            bg=self.BG, fg=self.FG,
-            selectcolor=self.ENTRY_BG,
-            activebackground=self.BG, activeforeground=self.FG,
-        )
-        cb_formatting.grid(row=rewrite_row, column=0, columnspan=2, sticky="w", **pad)
-        rewrite_row += 1
+        def select_audio_folder():
+            directory = filedialog.askdirectory(parent=win, title="Choose model download or existing model folder",
+                                                initialdir=v_model_directory.get(), mustexist=False)
+            if directory:
+                v_model_directory.set(directory)
+                sync_audio_folder()
 
-        label(rewrite_tab, "Custom instructions", rewrite_row)
-        e_custom = entry(rewrite_tab, rewrite_row)
-        e_custom.insert(0, cfg.get("rewrite_custom_instructions", ""))
-        rewrite_row += 1
+        def sync_audio_folder():
+            directory = v_model_directory.get().strip()
+            manager, service = self.app.local_audio_at(directory)
+            if manager is not selected_audio[0]:
+                selected_audio[0].unsubscribe(self._model_updates)
+                selected_audio[:] = manager, service
+                self._model_updates = manager.subscribe()
+                self._model_subscription_owner = manager
+                download_state[0] = manager.snapshot()
+            return manager
 
-        label(rewrite_tab, "Rewrite hotkey", rewrite_row)
-        v_rewrite_hotkey, c_rewrite_hotkey = combo(
-            rewrite_tab, REWRITE_HOTKEY_LIST, rewrite_row
-        )
-        rewrite_hotkey_value = sanitize_rewrite_hotkey(
-            cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value
-        )
-        v_rewrite_hotkey.set(rewrite_hotkey_value)
-        c_rewrite_hotkey.current(REWRITE_HOTKEY_LIST.index(rewrite_hotkey_value))
+        self._button(folder_field.control, "Browse…", select_audio_folder, padx=14, pady=5).pack(side="left", padx=(8, 0))
+        folder_entry.bind("<FocusOut>", lambda _event: sync_audio_folder(), add="+")
 
-        btn_frame = tk.Frame(win, bg=self.BG)
-        btn_frame.pack(fill="x", padx=14, pady=12)
+        idle_control = self._row(local_panel, "Unload after idle", "Minutes without dictation before the model leaves memory. 0 keeps it loaded.")
+        v_idle_minutes = tk.StringVar(win, value=f"{float(cfg.get('local_model_idle_timeout_minutes', 20)):g}")
+        ttk.Spinbox(idle_control, from_=0, to=1440, width=6, textvariable=v_idle_minutes, font=self.type.body).pack()
 
+        source_row = tk.Frame(local_panel, bg=brand_ui.GRAPHITE)
+        source_row.pack(fill="x")
+        source = tk.Label(source_row, text="huggingface.co/oruk/orukeet", bg=brand_ui.GRAPHITE, fg=brand_ui.ORANGE,
+                          cursor="hand2", anchor="w", font=self.type.mono_body)
+        source.pack(side="left")
+        source.bind("<Button-1>", lambda _event: webbrowser.open("https://huggingface.co/oruk/orukeet"))
+        tk.Label(source_row, text="Weights CC BY-SA 4.0. License and attribution stay with the download.",
+                 bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w", font=self.type.small).pack(side="left", padx=(10, 0))
+
+        def download_model():
+            try:
+                sync_audio_folder().start_download()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=win)
+
+        def remove_model():
+            try:
+                sync_audio_folder().remove()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=win)
+
+        download_button = self._button(local_actions, "Download", download_model, variant="solid")
+        cancel_download_button = self._button(local_actions, "Cancel download", lambda: selected_audio[0].cancel())
+        remove_button = self._button(local_actions, "Remove download", remove_model, variant="danger")
+        local_error_detail = [""]
+        details_button = self._button(local_actions, "Error details", lambda: messagebox.showerror(
+            APP_NAME, local_error_detail[0], parent=win), variant="quiet")
+
+        def update_local_visibility():
+            local = normalize_provider(audio_controls["provider"].get()) == "orukeet"
+            if local:
+                audio_controls["remote"].pack_forget()
+                audio_controls["model"].set(MODEL_ID)
+                v_lang.set("auto")
+                c_lang.configure(state="disabled")
+                local_card.pack(fill="x", pady=(0, 16))
+            else:
+                audio_controls["remote"].pack(fill="x", after=audio_controls["provider_field"])
+                c_lang.configure(state="readonly")
+                v_lang.set(language_value)
+                local_card.pack_forget()
+
+        self._model_updates = self.app.local_models.subscribe()
+        self._model_subscription_owner = self.app.local_models
+        download_state = [self.app.local_models.snapshot()]
+
+        def poll_local_model():
+            if self._win is not win:
+                return
+            try:
+                download_state[0] = self._model_updates.get_nowait()
+            except queue.Empty:
+                pass
+            state = download_state[0]
+            manager, service = selected_audio
+            runtime = service.snapshot()
+            active = self.app.cfg.get("audio_provider") == "orukeet" and manager is self.app.local_models
+            local_error_detail[0] = state.error or (runtime["error"] if active else "")
+            installed = manager.files_present() and state.stage == "Installed"
+            busy = state.stage in BUSY_STAGES
+            if busy:
+                percent = 100 * state.completed / state.total if state.total else 0
+                text = f"{state.stage} · {percent:.0f}%" if state.total else state.stage
+                local_progress.configure(value=percent)
+                local_progress.pack(fill="x", pady=(0, 8), before=local_actions)
+            else:
+                local_progress.pack_forget()
+                if saving[0]:
+                    text = "Loading"
+                elif active and runtime["error"]:
+                    text = "Loading failed · " + runtime["error"][:180]
+                elif installed:
+                    text = f"Active · {runtime['state']}" if active else "Installed · Not active"
+                elif active:
+                    text = "Model missing"
+                else:
+                    text = state.stage
+                if state.error:
+                    text += "\n" + state.error[:180]
+            local_status.set(text)
+            for button in (download_button, cancel_download_button, remove_button, details_button):
+                button.pack_forget()
+            if busy:
+                cancel_download_button.pack(side="left")
+            elif not installed:
+                download_button.configure(state="disabled" if saving[0] or runtime["busy"] else "normal")
+                download_button.pack(side="left")
+            if manager.path.exists() and not active and not busy:
+                remove_button.configure(state="disabled" if saving[0] or runtime["busy"] else "normal")
+                remove_button.pack(side="left", padx=(8, 0))
+            if local_error_detail[0] and not busy:
+                details_button.pack(side="left", padx=(8, 0))
+            self._model_poll_id = self.app._ui_root.after(200, poll_local_model)
+
+        update_local_visibility()
+        self._model_poll_id = self.app._ui_root.after(0, poll_local_model)
+
+        # ---- Dictionary ---------------------------------------------
+        page = self.pages["dictionary"]
+        card = self._card(page).inner
+        entries = [{"word": term} for term in normalize_vocabulary(cfg.get("vocabulary"))]
+        entries += [{"from": rule["from"], "to": rule["to"]} for rule in normalize_corrections(cfg.get("corrections"))]
+        self.dictionary_entries = entries
+
+        top = tk.Frame(card, bg=brand_ui.GRAPHITE)
+        top.pack(fill="x", pady=(0, 6))
+        count_label = tk.Label(top, text="", bg=brand_ui.GRAPHITE, fg=brand_ui.BONE, anchor="w", font=self.type.heading)
+        count_label.pack(side="left")
+        add_new_button = self._button(top, "Add new", variant="solid")
+        add_new_button.pack(side="right")
+
+        form = tk.Frame(card, bg=brand_ui.SLATE, padx=16, pady=12)
+        v_correction = tk.BooleanVar(win, value=False)
+        form_toggle_row = tk.Frame(form, bg=brand_ui.SLATE)
+        form_toggle_row.pack(fill="x", pady=(0, 10))
+        tk.Label(form_toggle_row, text="Correct a misspelling", bg=brand_ui.SLATE, fg=brand_ui.BONE,
+                 font=self.type.body).pack(side="left")
+        form_hint = tk.Label(form_toggle_row, text="Off: the recognizer prefers this spelling. On: the misspelling is replaced after transcription.",
+                             bg=brand_ui.SLATE, fg=brand_ui.ASH, font=self.type.small, wraplength=360, justify="left")
+        form_hint.pack(side="left", padx=(12, 12))
+        brand_ui.Toggle(form_toggle_row, v_correction, lambda: render_form()).pack(side="right")
+        form_inputs = tk.Frame(form, bg=brand_ui.SLATE)
+        form_inputs.pack(fill="x")
+        e_word = brand_ui.Entry(form_inputs, placeholder="Add a new word", font=self.type.body,
+                                highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+        e_from = brand_ui.Entry(form_inputs, placeholder="Misspelling", font=self.type.body,
+                                highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+        arrow = tk.Label(form_inputs, text="→", bg=brand_ui.SLATE, fg=brand_ui.ORANGE, font=self.type.strong)
+        e_to = brand_ui.Entry(form_inputs, placeholder="Correct spelling", font=self.type.body,
+                              highlightbackground=brand_ui.HAIRLINE, bg=brand_ui.GRAPHITE)
+        form_actions = tk.Frame(form, bg=brand_ui.SLATE)
+        form_actions.pack(fill="x", pady=(10, 0))
+        form_error = tk.Label(form_actions, text="", bg=brand_ui.SLATE, fg=brand_ui.RED, font=self.type.small, anchor="w")
+        form_error.pack(side="left")
+        list_holder = tk.Frame(card, bg=brand_ui.GRAPHITE)
+        list_holder.pack(fill="x")
+
+        def render_form():
+            for widget in (e_word, e_from, arrow, e_to):
+                widget.pack_forget()
+            if v_correction.get():
+                e_from.pack(side="left", fill="x", expand=True, ipady=5)
+                arrow.pack(side="left", padx=8)
+                e_to.pack(side="left", fill="x", expand=True, ipady=5)
+                e_from.focus_set()
+            else:
+                e_word.pack(side="left", fill="x", expand=True, ipady=5)
+                e_word.focus_set()
+            form_error.configure(text="")
+
+        def show_form(show=True):
+            if show:
+                form.pack(fill="x", pady=(6, 12), before=list_holder)
+                render_form()
+            else:
+                form.pack_forget()
+
+        def add_entry(_event=None):
+            if v_correction.get():
+                source, target = " ".join(e_from.value().split()), " ".join(e_to.value().split())
+                if not source or not target:
+                    form_error.configure(text="Fill in both the misspelling and the correct spelling.")
+                    return
+                if source == target:
+                    form_error.configure(text="The two spellings are identical.")
+                    return
+                entries[:] = [e for e in entries if e.get("from", "").lower() != source.lower()]
+                entries.append({"from": source, "to": target})
+                e_from.set_value("")
+                e_to.set_value("")
+            else:
+                word = " ".join(e_word.value().split())
+                if not word:
+                    form_error.configure(text="Type a word or name first.")
+                    return
+                entries[:] = [e for e in entries if e.get("word", "").lower() != word.lower()]
+                entries.append({"word": word})
+                e_word.set_value("")
+            render_list()
+            render_form()
+
+        for widget in (e_word, e_from, e_to):
+            widget.bind("<Return>", add_entry)
+        self._button(form_actions, "Add word", add_entry, variant="solid", padx=16, pady=5).pack(side="right")
+        self._button(form_actions, "Cancel", lambda: show_form(False), padx=16, pady=5).pack(side="right", padx=(0, 8))
+        add_new_button.configure(command=show_form)
+
+        def remove_entry(entry):
+            entries.remove(entry)
+            render_list()
+
+        def render_list():
+            for child in list_holder.winfo_children():
+                child.destroy()
+            words = [e for e in entries if "word" in e]
+            fixes = [e for e in entries if "from" in e]
+            count_label.configure(text=f"{len(words)} words · {len(fixes)} corrections" if entries else "Vocabulary")
+            if not entries:
+                tk.Label(list_holder, text="Nothing here yet. Add names, products, and terms the recognizer gets wrong.",
+                         bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w", justify="left", wraplength=520,
+                         font=self.type.small).pack(fill="x", pady=(6, 4))
+                return
+            for index, entry in enumerate(sorted(entries, key=lambda e: (e.get("word") or e.get("to") or "").lower())):
+                if index:
+                    brand_ui.divider(list_holder, pady=(0, 0))
+                row = tk.Frame(list_holder, bg=brand_ui.GRAPHITE)
+                row.pack(fill="x", pady=6)
+                if "word" in entry:
+                    tk.Label(row, text=entry["word"], bg=brand_ui.GRAPHITE, fg=brand_ui.BONE, font=self.type.body).pack(side="left")
+                    kind = "hint"
+                else:
+                    tk.Label(row, text=entry["from"], bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, font=self.type.body).pack(side="left")
+                    tk.Label(row, text="→", bg=brand_ui.GRAPHITE, fg=brand_ui.ORANGE, font=self.type.strong).pack(side="left", padx=8)
+                    tk.Label(row, text=entry["to"], bg=brand_ui.GRAPHITE, fg=brand_ui.BONE, font=self.type.body).pack(side="left")
+                    kind = "fix"
+                self._button(row, "Remove", lambda e=entry: remove_entry(e), variant="quiet", padx=8, pady=3).pack(side="right")
+                tk.Label(row, text=kind.upper(), bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, font=self.type.mono).pack(side="right", padx=(0, 8))
+
+        render_list()
+
+        info = self._card(page).inner
+        self._heading(info, "How the dictionary is used", "No AI needed")
+        for title, text in (
+            ("Words", "Passed to the recognizer as hints, so it prefers your spelling: Orukeet on this PC, Mistral, OpenAI, and custom endpoints. Gemini gets them in its instruction."),
+            ("Corrections", "Replaced after transcription, whole words only, ignoring case. They work with every provider and run before any AI rewrite."),
+        ):
+            tk.Label(info, text=title, bg=brand_ui.GRAPHITE, fg=brand_ui.BONE, anchor="w", font=self.type.strong).pack(fill="x")
+            tk.Label(info, text=text, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w", justify="left", wraplength=560,
+                     font=self.type.small).pack(fill="x", pady=(1, 10))
+
+        # ---- Filler words -------------------------------------------
+        page = self.pages["fillers"]
+        card = self._card(page).inner
+        self._heading(card, "Hesitations", "Rules · Instant")
+        v_remove_fillers = tk.BooleanVar(win, value=bool(cfg.get("remove_fillers", True)))
+        filler_languages = set(normalize_filler_languages(cfg.get("filler_languages")))
+        v_filler_languages = {code: tk.BooleanVar(win, value=code in filler_languages) for code in FILLER_LANGUAGES}
+
+        def render_preview(*_args):
+            words = filler_words([code for code, var in v_filler_languages.items() if var.get()], e_custom_fillers.value())
+            enabled = v_remove_fillers.get()
+            after_label.configure(text=remove_fillers(self.FILLER_SAMPLE, words) if enabled else self.FILLER_SAMPLE)
+            for code, toggle in language_toggles.items():
+                toggle.set_enabled(enabled)
+
+        self._toggle(self._row(card, "Remove filler words", "Drops clear hesitations before the text is typed. Words with meaning, such as \"like\", \"well\", and \"dus\", stay."),
+                     v_remove_fillers, render_preview).pack()
+        language_toggles = {}
+        codes = list(FILLER_LANGUAGES)
+        for index, code in enumerate(codes):
+            label, words = FILLER_LANGUAGES[code]
+            control = self._row(card, label, ", ".join(words), last=index == len(codes) - 1 and False)
+            language_toggles[code] = self._toggle(control, v_filler_languages[code], render_preview)
+            language_toggles[code].pack()
+        custom_field = self._field(card, "Extra words to remove", "Comma-separated, whole words only. Handy for a personal tic such as \"basically\".")
+        e_custom_fillers = self._entry(custom_field.control)
+        e_custom_fillers.pack(fill="x", ipady=5)
+        e_custom_fillers.insert(0, cfg.get("custom_fillers", ""))
+        e_custom_fillers.bind("<KeyRelease>", render_preview, add="+")
+        custom_field.pack_configure(pady=(0, 0))
+
+        preview = self._card(page).inner
+        self._heading(preview, "Preview", "Live")
+        brand_ui.Tag(preview, "Heard", self.type.mono).pack(anchor="w")
+        tk.Label(preview, text=self.FILLER_SAMPLE, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w", justify="left",
+                 wraplength=560, font=self.type.body).pack(fill="x", pady=(2, 10))
+        brand_ui.Tag(preview, "Typed", self.type.mono, color=brand_ui.GREEN).pack(anchor="w")
+        after_label = tk.Label(preview, text="", bg=brand_ui.GRAPHITE, fg=brand_ui.BONE, anchor="w", justify="left",
+                               wraplength=560, font=self.type.body)
+        after_label.pack(fill="x", pady=(2, 0))
+        render_preview()
+
+        # ---- Rewriting ----------------------------------------------
+        page = self.pages["rewriting"]
+        card = self._card(page).inner
+        self._heading(card, "Text model", "Rewrite provider")
+        tk.Label(card, text="Its own provider, key, endpoint, and model. For custom servers enter the full endpoint URL and a model ID, "
+                 "or use Refresh to list models. Leave the key blank when the server does not need one.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
+        rewrite_controls = build_provider_controls(card, "rewrite", REWRITE_PROVIDER_IDS)
+
+        card = self._card(page).inner
+        self._heading(card, "Dictation polish", "AI")
+        v_auto_rewrite = tk.BooleanVar(win, value=bool(cfg.get("auto_rewrite", DEFAULT_CONFIG["auto_rewrite"])))
+        self._toggle(self._row(card, "Auto-rewrite dictation", "Grammar, tone, and self-corrections such as \"Tuesday, no, Thursday\". Adds a round trip to the rewrite provider."),
+                     v_auto_rewrite).pack()
+        control = self._row(card, "Tone")
+        v_tone, c_tone = self._combo(control, REWRITE_TONE_LIST, width=14)
+        v_tone.set(sanitize_rewrite_tone(cfg.get("rewrite_tone", DEFAULT_CONFIG["rewrite_tone"])))
+        c_tone.pack()
+        v_formatting = tk.BooleanVar(win, value=bool(cfg.get("rewrite_formatting", DEFAULT_CONFIG["rewrite_formatting"])))
+        self._toggle(self._row(card, "Smart formatting", "Paragraphs and bullet lists where the content asks for them."), v_formatting).pack()
+        custom_field = self._field(card, "Custom instructions")
+        e_custom = self._entry(custom_field.control, placeholder="Never use em dashes. Keep greetings.")
+        e_custom.pack(fill="x", ipady=5)
+        e_custom.set_value(cfg.get("rewrite_custom_instructions", ""))
+
+        card = self._card(page).inner
+        self._heading(card, "Voice edits", "Selected text")
+        control = self._row(card, "Rewrite key", "Select text, hold this key, and say what should change. Must differ from the dictation key.", last=True)
+        v_rewrite_hotkey, c_rewrite_hotkey = self._combo(control, REWRITE_HOTKEY_LIST, width=14)
+        v_rewrite_hotkey.set(sanitize_rewrite_hotkey(cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value))
+        c_rewrite_hotkey.pack()
+
+        # ---- footer actions -----------------------------------------
         def save():
-            new_cfg = dict(cfg)
+            if saving[0]:
+                return
+            new_cfg = {}
+            try:
+                idle = float(v_idle_minutes.get())
+                if not math.isfinite(idle) or idle < 0:
+                    raise ValueError()
+                new_cfg["local_model_idle_timeout_minutes"] = idle
+                directory = v_model_directory.get().strip()
+                if directory != str(self.app.local_models.path):
+                    new_cfg["local_model_directory"] = str(sync_audio_folder().path)
+            except (ValueError, OSError) as exc:
+                messagebox.showwarning(APP_NAME, str(exc) or "Enter zero or a positive unload timeout in minutes.", parent=win)
+                self.show_page("transcription")
+                return
             new_cfg["audio_provider"] = normalize_provider(audio_controls["provider"].get())
             new_cfg["audio_api_key"] = audio_controls["api_key"].get().strip()
             new_cfg["audio_endpoint"] = audio_controls["endpoint"].get().strip()
@@ -1819,59 +2154,93 @@ class SettingsWindow:
             new_cfg["rewrite_model"] = rewrite_controls["model"].get().strip()
             for legacy_key in ("api_key", "endpoint", "model", "chat_endpoint"):
                 new_cfg.pop(legacy_key, None)
-            if not new_cfg["audio_endpoint"] or not new_cfg["audio_model"]:
-                messagebox.showwarning(
-                    APP_NAME, "Choose an audio endpoint and model before saving.", parent=win
-                )
-                notebook.select(audio_tab)
+            if new_cfg["audio_provider"] == "orukeet":
+                new_cfg["audio_endpoint"] = ""
+                new_cfg["audio_api_key"] = ""
+                new_cfg["audio_model"] = MODEL_ID
+            elif not new_cfg["audio_endpoint"] or not new_cfg["audio_model"]:
+                messagebox.showwarning(APP_NAME, "Choose an audio endpoint and model before saving.", parent=win)
+                self.show_page("transcription")
                 return
             if not new_cfg["rewrite_endpoint"] or not new_cfg["rewrite_model"]:
-                messagebox.showwarning(
-                    APP_NAME, "Choose a rewrite endpoint and model before saving.", parent=win
-                )
-                notebook.select(rewrite_tab)
+                messagebox.showwarning(APP_NAME, "Choose a rewrite endpoint and model before saving.", parent=win)
+                self.show_page("rewriting")
                 return
             new_cfg["hotkey"] = sanitize_hotkey(v_hotkey.get() or cfg.get("hotkey"))
-            new_cfg["language"] = sanitize_language(v_lang.get() or cfg.get("language"))
+            if new_cfg["audio_provider"] != "orukeet":
+                new_cfg["language"] = sanitize_language(v_lang.get() or cfg.get("language"))
             new_cfg["paste_mode"] = v_paste.get()
             new_cfg["ready_chime"] = v_ready_chime.get()
             new_cfg["auto_rewrite"] = v_auto_rewrite.get()
             new_cfg["rewrite_tone"] = sanitize_rewrite_tone(v_tone.get())
             new_cfg["rewrite_formatting"] = v_formatting.get()
-            new_cfg["rewrite_custom_instructions"] = e_custom.get().strip()
+            new_cfg["rewrite_custom_instructions"] = e_custom.value().strip()
+            new_cfg["vocabulary"] = normalize_vocabulary([e["word"] for e in entries if "word" in e])
+            new_cfg["corrections"] = normalize_corrections([e for e in entries if "from" in e])
+            new_cfg["remove_fillers"] = v_remove_fillers.get()
+            new_cfg["filler_languages"] = [code for code, var in v_filler_languages.items() if var.get()]
+            new_cfg["custom_fillers"] = ", ".join(normalize_vocabulary(e_custom_fillers.value()))
             chosen_rewrite_hotkey = v_rewrite_hotkey.get()
-            new_cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(
-                chosen_rewrite_hotkey, new_cfg["hotkey"]
-            )
+            new_cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(chosen_rewrite_hotkey, new_cfg["hotkey"])
             if chosen_rewrite_hotkey != "off" and new_cfg["rewrite_hotkey"] == "off":
                 messagebox.showwarning(
                     APP_NAME,
                     "Rewrite hotkey must differ from the dictation hotkey - it has been disabled.",
                 )
-            save_config(new_cfg)
-            self.app.cfg = new_cfg
-            set_startup(v_startup.get())
-            # Restart hotkey listener with new hotkey
-            self.app.restart_listener()
-            self.app.restart_audio_stream()
-            self.app.refresh_connection_status()
-            self._on_close()
+            saving[0] = True
+            save_button.configure(text="Saving…", state="disabled")
+            save_status.set("Loading Orukeet…" if new_cfg["audio_provider"] == "orukeet" else "Saving…")
+            startup = v_startup.get()
+            results = queue.Queue(maxsize=1)
 
-        tk.Button(btn_frame, text="Save", command=save,
-                  bg=self.FG, fg=BRAND_KEY, activebackground="#FFFFFF",
-                  activeforeground=BRAND_KEY, relief="flat",
-                  font=("Segoe UI", 10, "bold"), cursor="hand2",
-                  padx=24, pady=5).pack(side="right", padx=6)
+            def worker():
+                try:
+                    self.app.apply_settings(new_cfg, save_cancel)
+                    set_startup(startup)
+                    results.put(None)
+                except Exception as exc:
+                    results.put(str(exc))
 
-        tk.Button(btn_frame, text="Cancel", command=self._on_close,
-                  bg=self.BTN_BG, fg=self.FG, activebackground=self.LINE,
-                  activeforeground=self.FG, relief="flat",
-                  font=("Segoe UI", 10), cursor="hand2",
-                  padx=24, pady=5).pack(side="right", padx=6)
+            def poll_save():
+                if self._win is not win:
+                    return
+                try:
+                    error = results.get_nowait()
+                except queue.Empty:
+                    self._save_poll_id = self.app._ui_root.after(50, poll_save)
+                    return
+                saving[0] = False
+                save_button.configure(text="Save", state="normal")
+                save_status.set("Could not save" if error else "Saved")
+                status_label.configure(fg=brand_ui.RED if error else brand_ui.GREEN)
+                if error:
+                    messagebox.showerror(APP_NAME, error, parent=win)
 
+            threading.Thread(target=worker, daemon=True).start()
+            self._save_poll_id = self.app._ui_root.after(50, poll_save)
+
+        save_status = tk.StringVar(win)
+        status_label = tk.Label(actions, textvariable=save_status, bg=brand_ui.KEY, fg=brand_ui.ASH, font=self.type.mono_body)
+        status_label.pack(side="left")
+        save_button = self._button(actions, "Save", save, variant="solid", padx=26, pady=8)
+        save_button.pack(side="right")
+        self._button(actions, "Cancel", self._on_close, padx=22, pady=8).pack(side="right", padx=(0, 10))
+        self.save_button = save_button
+
+        self.show_page("dictation")
         win.tk.call("tk::PlaceWindow", win._w, "center")
 
     def _on_close(self):
+        for name in ("_model_poll_id", "_save_poll_id"):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                self.app._ui_root.after_cancel(timer)
+                setattr(self, name, None)
+        if self._save_cancel is not None:
+            self._save_cancel.set()
+        if self._model_updates is not None:
+            self._model_subscription_owner.unsubscribe(self._model_updates)
+            self._model_updates = None
         if self._win:
             try:
                 self._win.destroy()
@@ -1879,6 +2248,9 @@ class SettingsWindow:
                 pass
             self._win = None
             self._icon_photo = None
+            self._logo_photo = None
+        self.pages = {}
+        self._nav = {}
 
 
 # ---------------------------------------------------------------------------
@@ -1890,6 +2262,22 @@ class OwnkeyApp:
 
     def __init__(self):
         self.cfg = load_config()
+        self._shutting_down = False
+        self._config_lock = threading.Lock()
+        self.local_models = LocalModelManager(directory=self.cfg.get("local_model_directory"))
+        self.local_transcriber = LocalTranscriber(self.local_models)
+        self._local_audio_locations = {}
+        self.local_transcriber.configure(
+            active=self.cfg.get("audio_provider") == "orukeet",
+            idle_minutes=self.cfg["local_model_idle_timeout_minutes"],
+        )
+        threading.Thread(target=self.local_models.check_installation, daemon=True).start()
+        # Preserve insertion order when a new recording starts during decoding.
+        self._transcription_queue = queue.Queue()
+        self._record_cfg = dict(self.cfg)
+        self._record_local_attempt = None
+        self._record_local_error = None
+        self._pending_listener_restart = False
         # Auto-register for Windows startup on first run (user can disable in Settings)
         if os.name == "nt" and not is_startup_enabled():
             set_startup(True)
@@ -1927,6 +2315,62 @@ class OwnkeyApp:
         self._rewrite_selection = ""
         self._rewrite_capture_done = threading.Event()
         self._rewrite_capture_done.set()
+        threading.Thread(target=self._transcription_loop, daemon=True, name="dictation").start()
+
+    def local_audio_at(self, directory):
+        """Keep each location alive while recordings and downloads still use it."""
+        from pathlib import Path
+        target = LocalModelManager(model=self.local_models.model, directory=directory).path.resolve()
+        with self._config_lock:
+            if target == self.local_models.path.resolve():
+                return self.local_models, self.local_transcriber
+            if not hasattr(self, "_local_audio_locations"):
+                self._local_audio_locations = {}
+            if target not in self._local_audio_locations:
+                manager = LocalModelManager(model=self.local_models.model, directory=target)
+                service = LocalTranscriber(manager)
+                self._local_audio_locations[target] = manager, service
+                threading.Thread(target=manager.check_installation, daemon=True).start()
+            return self._local_audio_locations[target]
+
+    def apply_settings(self, changes, cancelled=None):
+        """Prepare local audio, then persist and publish one live config update."""
+        attempt = None
+        manager, service = self.local_models, self.local_transcriber
+        try:
+            if "local_model_directory" in changes:
+                manager, service = self.local_audio_at(changes["local_model_directory"])
+            idle = float(changes.get("local_model_idle_timeout_minutes", self.cfg.get("local_model_idle_timeout_minutes", 20)))
+            if not math.isfinite(idle) or idle < 0:
+                raise ModelError("Unload timeout must be zero or a positive number of minutes.")
+            if changes.get("audio_provider", self.cfg.get("audio_provider")) == "orukeet":
+                attempt = service.begin_attempt(changes.get("audio_model", self.cfg["audio_model"]), validate=True)
+                attempt.ready.result()
+            with self._config_lock, self._lock:
+                if getattr(self, "_shutting_down", False) or (cancelled is not None and cancelled.is_set()):
+                    raise ModelError("Save cancelled.")
+                new_cfg = dict(self.cfg)
+                new_cfg.update(changes)
+                for legacy_key in ("api_key", "endpoint", "model", "chat_endpoint"):
+                    new_cfg.pop(legacy_key, None)
+                save_config(new_cfg)
+                self.cfg = new_cfg
+                if service is not self.local_transcriber:
+                    self._local_audio_locations[self.local_models.path.resolve()] = self.local_models, self.local_transcriber
+                    self.local_transcriber.configure(active=False)
+                    self.local_models, self.local_transcriber = manager, service
+                self.local_transcriber.configure(
+                    active=new_cfg.get("audio_provider") == "orukeet",
+                    idle_minutes=new_cfg.get("local_model_idle_timeout_minutes", 20),
+                )
+                if self._recording:
+                    self._pending_listener_restart = True
+                else:
+                    self.restart_listener()
+            self.refresh_connection_status()
+        finally:
+            if attempt is not None:
+                attempt.close()
 
     # ------------------------------------------------------------------
     # State / icon management
@@ -1934,6 +2378,10 @@ class OwnkeyApp:
 
     def _set_state(self, state: str) -> None:
         """Update internal state and refresh tray icon + tooltip."""
+        if getattr(self, "_shutting_down", False):
+            return
+        if self._recording and state != "recording":
+            return
         self._state = state
         if DEBUG_OVERLAY_STATES:
             overlay_debug(f"app-state {state}")
@@ -1977,9 +2425,20 @@ class OwnkeyApp:
 
     def _connection_loop(self) -> None:
         while not self._connection_stop.is_set():
-            endpoint = self.cfg.get("audio_endpoint", DEFAULT_CONFIG["audio_endpoint"])
-            online = endpoint_reachable(endpoint)
-            self._connection_state = "online" if online else "offline"
+            cfg = self.cfg
+            if cfg.get("audio_provider") == "orukeet":
+                # Unloaded is a normal offline-ready state; never probe an API.
+                state = self.local_transcriber.snapshot()
+                ready = (self.local_models.files_present()
+                         and self.local_models.snapshot().stage == "Installed"
+                         and state["state"] != "Error")
+                connection = "online" if ready else "checking"
+            else:
+                endpoint = cfg.get("audio_endpoint", DEFAULT_CONFIG["audio_endpoint"])
+                connection = "online" if endpoint_reachable(endpoint) else "offline"
+            if cfg is not self.cfg:
+                continue
+            self._connection_state = connection
             self._overlay.update(connection=self._connection_state)
             self._connection_kick.clear()
             self._connection_kick.wait(CONNECTION_CHECK_INTERVAL)
@@ -2009,9 +2468,10 @@ class OwnkeyApp:
 
     def _hotkey_mode_for(self, key) -> str | None:
         """Return the recording mode a pressed key maps to, if any."""
-        if key in self._resolve_pynput_keys(self.cfg.get("hotkey", "right alt")):
+        cfg = self._record_cfg if self._recording else self.cfg
+        if key in self._resolve_pynput_keys(cfg.get("hotkey", "right alt")):
             return "dictate"
-        rewrite_key = self.cfg.get("rewrite_hotkey", "off")
+        rewrite_key = cfg.get("rewrite_hotkey", "off")
         if rewrite_key != "off" and key in self._resolve_pynput_keys(rewrite_key):
             return "rewrite"
         return None
@@ -2061,7 +2521,7 @@ class OwnkeyApp:
         if self._stream is not None:
             return True
         try:
-            sr = int(self.cfg.get("sample_rate", DEFAULT_CONFIG["sample_rate"]))
+            sr = audio_sample_rate(self._record_cfg)
             stream = sd.InputStream(
                 samplerate=sr,
                 channels=1,
@@ -2157,25 +2617,33 @@ class OwnkeyApp:
                     self._overlay.update(level=self._level_smoothed)
                     self._last_level_push = now
 
-    def _capture_rewrite_selection(self) -> None:
+    def _capture_rewrite_selection(self, capture) -> None:
         """Capture the selection in the background while the hotkey is held."""
         try:
-            self._rewrite_selection = get_selected_text()
-            overlay_debug(f"rewrite press-capture chars={len(self._rewrite_selection)}")
+            capture["text"] = get_selected_text()
+            overlay_debug(f"rewrite press-capture chars={len(capture['text'])}")
         finally:
-            self._rewrite_capture_done.set()
+            capture["done"].set()
 
     def _start_recording(self, mode: str = "dictate") -> None:
         with self._lock:
-            if self._recording:
+            if self._recording or self._shutting_down:
                 return
             self._recording = True
             self._record_mode = mode
-            self._rewrite_selection = ""
-            self._rewrite_capture_done.set()
-            if mode == "rewrite" and self.cfg.get("rewrite_hotkey") in REWRITE_PRESS_CAPTURE_HOTKEYS:
-                self._rewrite_capture_done.clear()
-                threading.Thread(target=self._capture_rewrite_selection, daemon=True).start()
+            self._record_cfg = dict(self.cfg)
+            self._record_local_attempt = None
+            self._record_local_error = None
+            if self._record_cfg.get("audio_provider") == "orukeet":
+                try:
+                    self._record_local_attempt = self.local_transcriber.begin_attempt(self._record_cfg["audio_model"])
+                except Exception as exc:
+                    self._record_local_error = str(exc)
+            self._record_capture = {"text": "", "done": threading.Event()}
+            self._record_capture["done"].set()
+            if mode == "rewrite" and self._record_cfg.get("rewrite_hotkey") in REWRITE_PRESS_CAPTURE_HOTKEYS:
+                self._record_capture["done"].clear()
+                threading.Thread(target=self._capture_rewrite_selection, args=(self._record_capture,), daemon=True).start()
             self._last_level_push = 0.0
             self._level_smoothed = 0.0
             self._record_started_at = time.monotonic()
@@ -2198,6 +2666,8 @@ class OwnkeyApp:
         with self._lock:
             if not self._ensure_audio_stream():
                 self._recording = False
+                if self._record_local_attempt is not None:
+                    self._record_local_attempt.close()
                 self._set_state("idle")
                 return
 
@@ -2206,145 +2676,179 @@ class OwnkeyApp:
             if not self._recording:
                 return
             self._recording = False
-
-        with self._audio_lock:
-            frames = list(self._audio_frames)
-            heard_audio = self._heard_audio_in_session
-            self._audio_frames = []
-        mode = self._record_mode
-        self._stop_audio_stream()
-
-        # Run transcription in a background daemon thread
-        t = threading.Thread(
-            target=self._transcribe_and_type,
-            args=(frames, heard_audio, mode),
-            daemon=True,
-        )
-        t.start()
+            with self._audio_lock:
+                frames = list(self._audio_frames)
+                heard_audio = self._heard_audio_in_session
+                self._audio_frames = []
+            self._stop_audio_stream()
+            self._transcription_queue.put((
+                frames, heard_audio, self._record_mode,
+                self._record_cfg, self._record_local_attempt, self._record_capture,
+                self._record_local_error,
+            ))
+            if self._pending_listener_restart:
+                self._pending_listener_restart = False
+                self.restart_listener()
 
     # ------------------------------------------------------------------
     # Transcription & typing
     # ------------------------------------------------------------------
 
-    def _transcribe_and_type(self, frames: list, heard_audio: bool, mode: str = "dictate") -> None:
+    def _transcription_loop(self):
+        while True:
+            recording = self._transcription_queue.get()
+            if recording is None:
+                return
+            self._transcribe_and_type(*recording)
+
+    def _processing_update(self, **values):
+        if not self._recording and not getattr(self, "_shutting_down", False):
+            self._overlay.update(**values)
+
+    def _local_loading_message(self):
+        if not self.local_transcriber.snapshot()["decoding"]:
+            self._processing_update(message="Loading model...")
+
+    def _transcribe_and_type(self, frames: list, heard_audio: bool, mode: str = "dictate",
+                             cfg=None, local_attempt=None, capture=None, local_error=None) -> None:
         """Background: convert frames to WAV, transcribe, then type or rewrite text."""
+        cfg = dict(self.cfg) if cfg is None else cfg
         self._set_state("processing")
-        self._overlay.update(connection=self._connection_state, target=self._target_status(), level=0.0)
+        self._processing_update(connection=self._connection_state, target=self._target_status(), level=0.0,
+                                activity=mode, message="Rewriting..." if mode == "rewrite" else "Transcribing...")
         try:
-            sr = int(self.cfg.get("sample_rate", 16000))
+            if getattr(self, "_shutting_down", False):
+                return
+            sr = audio_sample_rate(cfg)
             duration = audio_duration_seconds(frames, sr)
             wav_bytes = record_to_wav(frames, sr)
 
             if len(wav_bytes) < MIN_AUDIO_BYTES:
-                self._overlay.update(processing="done")
+                self._processing_update(processing="done")
                 self._set_state("idle")
                 return
             if (not heard_audio) and (duration < MIN_AUDIO_SECONDS_WITHOUT_ACTIVITY):
-                self._overlay.update(processing="done")
+                self._processing_update(processing="done")
                 self._set_state("idle")
                 return
 
-            audio_provider = self.cfg.get(
+            audio_provider = cfg.get(
                 "audio_provider", DEFAULT_CONFIG["audio_provider"]
             )
-            audio_endpoint = self.cfg.get(
+            audio_endpoint = cfg.get(
                 "audio_endpoint", DEFAULT_CONFIG["audio_endpoint"]
             )
             if provider_requires_key(audio_provider, audio_endpoint) and not get_effective_api_key(
-                self.cfg
+                cfg
             ):
                 self._notify_error(
-                    "No audio API key set. Open Settings and configure the Audio tab."
+                    "No audio API key set. Open Settings > Transcription and add a key."
                 )
-                self._overlay.update(processing="error")
+                self._processing_update(processing="error")
                 self._set_state("idle")
                 return
 
             if mode == "rewrite":
-                self._run_rewrite_command(wav_bytes)
+                if local_error:
+                    raise ModelError(local_error)
+                self._run_rewrite_command(wav_bytes, cfg, local_attempt, capture)
                 return
 
-            text = transcribe(wav_bytes, self.cfg)
-            if text and self.cfg.get("auto_rewrite", DEFAULT_CONFIG["auto_rewrite"]):
-                self._overlay.update(message="Polishing...", activity="rewrite")
+            if local_error:
+                raise ModelError(local_error)
+            text = transcribe(wav_bytes, cfg, local_attempt, self._local_loading_message)
+            if getattr(self, "_shutting_down", False):
+                return
+            text = clean_transcript(text, cfg)
+            if text and cfg.get("auto_rewrite", DEFAULT_CONFIG["auto_rewrite"]):
+                self._processing_update(message="Polishing...", activity="rewrite")
                 try:
-                    text = rewrite_dictation(text, self.cfg)
+                    text = rewrite_dictation(text, cfg)
                 except requests.HTTPError as exc:
                     self._notify_error(f"{describe_api_error(exc)} Raw transcript inserted.")
                 except Exception:
                     self._notify_error("Rewrite failed — inserted the raw transcript instead.")
             if text:
                 time.sleep(0.1)
+                if getattr(self, "_shutting_down", False):
+                    return
                 target = self._target_status()
-                self._overlay.update(target=target)
+                self._processing_update(target=target)
                 if target == "not_selected":
                     self._notify_error("No text box selected. Click a text field and try again.")
-                type_text(text, self.cfg.get("paste_mode", True))
-            self._overlay.update(processing="done", target=self._target_status())
+                type_text(text, cfg.get("paste_mode", True))
+            self._processing_update(processing="done", target=self._target_status())
         except requests.HTTPError as exc:
-            self._overlay.update(processing="error")
+            self._processing_update(processing="error")
             self._notify_error(describe_api_error(exc))
         except requests.ConnectionError:
-            self._connection_state = "offline"
-            self._overlay.update(connection="offline", processing="error")
+            if self.cfg.get("audio_provider") != "orukeet":
+                self._connection_state = "offline"
+            self._processing_update(connection=self._connection_state, processing="error")
             self._notify_error("Network error - check internet connection.")
             self.refresh_connection_status()
         except Exception as exc:
-            self._overlay.update(processing="error")
+            self._processing_update(processing="error")
             self._notify_error(f"Transcription failed: {exc}")
         finally:
+            if local_attempt is not None:
+                local_attempt.close()
             self._set_state("idle")
 
-    def _run_rewrite_command(self, wav_bytes: bytes) -> None:
+    def _run_rewrite_command(self, wav_bytes: bytes, cfg, local_attempt=None, capture=None) -> None:
         """Rewrite the currently selected text according to the spoken instruction."""
         # Prefer the selection captured at hotkey press; fall back to a fresh
         # capture after release for hotkeys where press-capture is unsafe.
-        self._rewrite_capture_done.wait(timeout=1.5)
-        selection = self._rewrite_selection
+        if capture is not None:
+            capture["done"].wait(timeout=1.5)
+        selection = capture["text"] if capture is not None else ""
         if not selection.strip():
             selection = get_selected_text()
         overlay_debug(f"rewrite selection chars={len(selection)}")
         if not selection.strip():
-            self._overlay.update(processing="error", message="Select text first")
+            self._processing_update(processing="error", message="Select text first")
             self._notify_error(
                 "Nothing selected. Highlight text, then hold the rewrite hotkey and speak an instruction."
             )
             return
         if len(selection) > REWRITE_MAX_SELECTION_CHARS:
-            self._overlay.update(processing="error", message="Selection too long")
+            self._processing_update(processing="error", message="Selection too long")
             self._notify_error("Selection is too long to rewrite.")
             return
 
-        instruction = transcribe(wav_bytes, self.cfg)
+        instruction = transcribe(wav_bytes, cfg, local_attempt, self._local_loading_message)
+        if getattr(self, "_shutting_down", False):
+            return
         overlay_debug(f"rewrite instruction: {instruction[:80]}")
         if not instruction:
-            self._overlay.update(processing="done")
+            self._processing_update(processing="done")
             return
 
-        self._overlay.update(message="Rewriting...")
-        rewrite_provider = self.cfg.get(
+        self._processing_update(message="Rewriting...")
+        rewrite_provider = cfg.get(
             "rewrite_provider", DEFAULT_CONFIG["rewrite_provider"]
         )
-        rewrite_endpoint = self.cfg.get(
+        rewrite_endpoint = cfg.get(
             "rewrite_endpoint", DEFAULT_CONFIG["rewrite_endpoint"]
         )
         if provider_requires_key(rewrite_provider, rewrite_endpoint) and not get_rewrite_api_key(
-            self.cfg
+            cfg
         ):
-            self._overlay.update(processing="error")
+            self._processing_update(processing="error")
             self._notify_error(
                 "No rewrite API key set. Open Settings and configure the Rewriting tab."
             )
             return
-        result = rewrite_selection_text(selection, instruction, self.cfg)
+        result = rewrite_selection_text(selection, instruction, cfg)
         overlay_debug(f"rewrite result chars={len(result)}")
         if not result:
-            self._overlay.update(processing="error")
+            self._processing_update(processing="error")
             self._notify_error("Rewrite returned no text — selection left unchanged.")
             return
         time.sleep(0.05)
-        type_text(result, self.cfg.get("paste_mode", True))
-        self._overlay.update(processing="done", target=self._target_status())
+        if not getattr(self, "_shutting_down", False):
+            type_text(result, cfg.get("paste_mode", True))
+        self._processing_update(processing="done", target=self._target_status())
 
     # ------------------------------------------------------------------
     # Notifications
@@ -2376,6 +2880,8 @@ class OwnkeyApp:
 
     def _notify_error(self, message: str) -> None:
         """Show a tray notification."""
+        if getattr(self, "_shutting_down", False):
+            return
         if self._tray:
             try:
                 self._tray.notify(message, title=f"{APP_NAME} — Error")
@@ -2478,6 +2984,9 @@ class OwnkeyApp:
             self._ui_root.after(50, self._poll_ui_commands)
 
     def _shutdown(self) -> None:
+        self._shutting_down = True
+        self._recording = False
+        self._settings._on_close()
         if self._listener:
             try:
                 self._listener.stop()
@@ -2486,6 +2995,24 @@ class OwnkeyApp:
         self._stop_audio_stream()
         if sys.platform.startswith("linux"):
             kb.close()
+        if self._settings._save_cancel is not None:
+            self._settings._save_cancel.set()
+        if self._record_local_attempt is not None:
+            self._record_local_attempt.close()
+        while True:
+            try:
+                recording = self._transcription_queue.get_nowait()
+            except queue.Empty:
+                break
+            if recording is not None and recording[4] is not None:
+                recording[4].close()
+        self._transcription_queue.put(None)
+        self.local_models.close()
+        self.local_transcriber.close()
+        for manager, service in getattr(self, "_local_audio_locations", {}).values():
+            if service is not self.local_transcriber:
+                manager.close()
+                service.close()
         self._connection_stop.set()
         self._overlay.stop()
         self._stop_tauri_overlay()
@@ -2549,7 +3076,9 @@ class OwnkeyApp:
             menu=menu,
         )
         self._tray.run_detached()
-        if "--settings" in sys.argv or (sys.platform.startswith("linux") and not get_effective_api_key(self.cfg)):
+        if "--settings" in sys.argv or (sys.platform.startswith("linux")
+                and provider_requires_key(audio_provider, audio_endpoint)
+                and not get_effective_api_key(self.cfg)):
             self._open_settings()
         self._ui_root.after(50, self._poll_ui_commands)
         try:
@@ -2561,7 +3090,7 @@ class OwnkeyApp:
         """Show a reminder to configure the audio provider."""
         time.sleep(2)
         self._notify_error(
-            "Welcome! Open Settings and configure your audio provider in the Audio tab."
+            "Welcome! Open Settings > Transcription and choose how your voice becomes text."
         )
 
 
@@ -2570,6 +3099,9 @@ class OwnkeyApp:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if "--local-smoke-test" in sys.argv:
+        from local_transcription import run_smoke_test
+        sys.exit(run_smoke_test(sys.argv[sys.argv.index("--local-smoke-test") + 1:]))
     instance = linux_desktop.SingleInstance() if sys.platform.startswith("linux") else None
     if instance and not instance.acquire():
         instance.activate()

@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_dynamic_libs, copy_metadata
 
 
 a = Analysis(
     ['ownkey.py'],
     pathex=[],
-    binaries=[],
-    datas=[('assets/tray', 'assets/tray')],
+    binaries=collect_dynamic_libs('sherpa_onnx'),
+    datas=[('assets/tray', 'assets/tray'), ('assets/fonts', 'assets/fonts')]
+          + copy_metadata('sherpa-onnx') + copy_metadata('sherpa-onnx-core'),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -14,6 +16,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Model weights are a separate, explicit download, never a build input.
+for entry in a.datas + a.binaries:
+    if entry[0].lower().endswith(('.onnx', '.gguf', '.tar.bz2')):
+        raise RuntimeError('Model files must not be bundled: ' + entry[0])
 pyz = PYZ(a.pure)
 
 exe = EXE(

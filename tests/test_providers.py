@@ -45,7 +45,7 @@ class ApiErrorTests(unittest.TestCase):
 class ProviderPresetTests(unittest.TestCase):
     def test_audio_and_rewrite_capabilities_are_explicit(self):
         self.assertEqual(
-            providers.AUDIO_PROVIDER_IDS, ("openai", "google", "mistral", "custom")
+            providers.AUDIO_PROVIDER_IDS, ("openai", "google", "mistral", "custom", "orukeet")
         )
         self.assertEqual(
             providers.REWRITE_PROVIDER_IDS,
@@ -395,3 +395,29 @@ class ConfigMigrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VocabularyHintTests(unittest.TestCase):
+    def test_openai_style_endpoints_send_terms_as_prompt(self):
+        with patch.object(providers.requests, "post", return_value=FakeResponse({"text": "Ownkey"})) as request:
+            providers.transcribe_audio("openai", "key", providers.default_endpoint("openai", "audio"),
+                                       "whisper-1", b"wav", "auto", ["Ownkey", " Orukeet "])
+        self.assertEqual(request.call_args.kwargs["data"], {"model": "whisper-1", "prompt": "Ownkey, Orukeet"})
+
+    def test_mistral_sends_terms_as_context_bias(self):
+        with patch.object(providers.requests, "post", return_value=FakeResponse({"text": "Ownkey"})) as request:
+            providers.transcribe_audio("mistral", "key", providers.default_endpoint("mistral", "audio"),
+                                       "voxtral-mini-latest", b"wav", "nl", ["Ownkey"])
+        self.assertEqual(request.call_args.kwargs["data"],
+                         {"model": "voxtral-mini-latest", "language": "nl", "context_bias": ["Ownkey"]})
+
+    def test_google_adds_terms_to_the_instruction_and_empty_lists_change_nothing(self):
+        payload = {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+        with patch.object(providers.requests, "post", return_value=FakeResponse(payload)) as request:
+            providers.transcribe_audio("google", "key", providers.default_endpoint("google", "audio"),
+                                       "gemini-test", b"wav", "en", ["Ownkey", "Bart"])
+        instruction = request.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Expected names and terms: Ownkey, Bart.", instruction)
+        with patch.object(providers.requests, "post", return_value=FakeResponse({"text": "hi"})) as request:
+            providers.transcribe_audio("custom", "", "http://localhost:1234/v1/audio/transcriptions", "whisper", b"wav", "nl", [])
+        self.assertEqual(request.call_args.kwargs["data"], {"model": "whisper", "language": "nl"})
