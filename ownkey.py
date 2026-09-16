@@ -20,6 +20,7 @@ import time
 import wave
 import ctypes
 import tempfile
+import webbrowser
 from ctypes import wintypes
 from urllib.parse import urlparse
 
@@ -59,6 +60,9 @@ from providers import (
 from local_models import BUSY_STAGES, MODEL_ID, ORUKEET, LocalModelManager, ModelError
 from local_transcription import LocalTranscriber, SAMPLE_RATE
 import brand_ui
+from meetings.server import MeetingServer
+from meetings.service import MeetingService
+from meetings.store import MeetingStore
 from text_cleanup import (
     FILLER_LANGUAGES,
     clean_transcript,
@@ -148,6 +152,10 @@ DEFAULT_CONFIG = {
     "remove_fillers": True,
     "filler_languages": ["en", "nl"],
     "custom_fillers": "",
+    # Meetings: remote analysis policy, auto-summary after transcription, default audio retention.
+    "meetings_remote_policy": "ask",
+    "meetings_auto_summary": False,
+    "meetings_retention": "days7",
 }
 
 HOTKEY_LIST = [
@@ -459,6 +467,10 @@ def load_config() -> dict:
     cfg["remove_fillers"] = bool(cfg.get("remove_fillers", True))
     cfg["filler_languages"] = normalize_filler_languages(cfg.get("filler_languages"))
     cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
+    cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
+    cfg["meetings_auto_summary"] = bool(cfg.get("meetings_auto_summary", False))
+    if cfg.get("meetings_retention") not in ("days7", "keep", "after_transcription"):
+        cfg["meetings_retention"] = "days7"
     return cfg
 
 
@@ -2319,6 +2331,141 @@ class OwnkeyApp:
         self._rewrite_capture_done = threading.Event()
         self._rewrite_capture_done.set()
         threading.Thread(target=self._transcription_loop, daemon=True, name="dictation").start()
+        self.meetings: MeetingService | None = None
+        self.meeting_server: MeetingServer | None = None
+        self._meetings_error = ""
+        self._start_meetings()
+
+    # ------------------------------------------------------------------
+    # Meetings
+    # ------------------------------------------------------------------
+
+    def _start_meetings(self) -> None:
+        """Meetings run beside dictation: a local library, a job worker and a
+        token-protected window on 127.0.0.1. If this fails, dictation still works."""
+        try:
+            self.meetings = MeetingService(
+                MeetingStore(), get_config=lambda: self.cfg, set_config=self._meeting_config_changed,
+                local_models=self.local_models, local_transcriber=self.local_transcriber,
+                get_rewrite_key=get_rewrite_api_key, notify=self._notify_error,
+                open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
+            )
+            self.meeting_server = MeetingServer(self.meetings)
+            self.meeting_server.start()
+        except Exception as exc:
+            self.meetings = None
+            self.meeting_server = None
+            self._meetings_error = str(exc)
+
+    def _meeting_config_changed(self, changes: dict) -> None:
+        with self._config_lock:
+            self.cfg.update(changes)
+            save_config(self.cfg)
+
+    def _meeting_capturing(self) -> bool:
+        meetings = getattr(self, "meetings", None)
+        return meetings is not None and meetings.is_capturing()
+
+    def _meeting_paused(self) -> bool:
+        capture = self.meetings.capture_state() if self._meeting_capturing() else None
+        return bool(capture and capture.get("state") == "paused")
+
+    def _meeting_capture_changed(self) -> None:
+        """Keep the tray icon honest while a meeting records."""
+        if not getattr(self, "_shutting_down", False):
+            self._set_state(self._state)
+
+    def _meeting_blocks_hotkeys(self) -> bool:
+        """During meeting capture the meeting owns the audio devices: the hotkeys
+        show the meeting status instead of starting dictation."""
+        if not self._meeting_capturing():
+            return False
+        capture = self.meetings.capture_state() or {}
+        elapsed = int(capture.get("elapsed", 0))
+        label = "Meeting paused" if capture.get("state") == "paused" else "Meeting recording"
+        self._overlay.update(
+            connection=self._connection_state, listening="ready", processing="idle",
+            target=self._target_status(), level=0.0,
+            message=f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}",
+        )
+        self._overlay.show()
+        self._ensure_tauri_overlay(resync=True)
+        self._overlay.hide_later(1600)
+        return True
+
+    def _open_meetings(self, icon=None, item=None) -> None:
+        self._open_meeting_window()
+
+    def _open_new_meeting(self, icon=None, item=None) -> None:
+        self._open_meeting_window(view="new")
+
+    def _open_meeting_window(self, view: str | None = None) -> None:
+        if self.meeting_server is None:
+            self._notify_error(f"Meetings could not start: {self._meetings_error or 'unknown error'}")
+            return
+        url = self.meeting_server.url + ("&view=new" if view == "new" else "")
+        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+
+    def _meeting_pause_resume(self, icon=None, item=None) -> None:
+        if not self._meeting_capturing():
+            return
+        try:
+            if self._meeting_paused():
+                self.meetings.resume()
+            else:
+                self.meetings.pause()
+        except Exception as exc:
+            self._notify_error(str(exc))
+
+    def _meeting_stop(self, icon=None, item=None) -> None:
+        if not self._meeting_capturing():
+            return
+
+        def stop():
+            try:
+                self.meetings.stop()
+                if self._tray:
+                    self._tray.notify("Meeting saved. Transcribing on this PC.", title=f"{APP_NAME} — Meetings")
+            except Exception as exc:
+                self._notify_error(str(exc))
+
+        threading.Thread(target=stop, daemon=True).start()
+
+    def _confirm_stop_meeting(self) -> bool:
+        """Quitting while a meeting records is an explicit choice: stop and save, or keep recording."""
+        capture = self.meetings.capture_state() or {}
+        title = capture.get("title") or "this meeting"
+        if os.name == "nt":
+            MB_YESNO, MB_ICONWARNING, MB_DEFBUTTON2, MB_TOPMOST, MB_SETFOREGROUND = 0x4, 0x30, 0x100, 0x40000, 0x10000
+            answer = ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Ownkey is recording “{title}”.\n\nStop the meeting and save it, then quit?\n\n"
+                "Yes: stop and save, then quit.\nNo: keep recording and stay open.",
+                f"{APP_NAME} — Meeting in progress",
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+            )
+            if answer != 6:  # IDYES
+                return False
+        try:
+            self.meetings.stop()
+        except Exception as exc:
+            self._notify_error(str(exc))
+        return True
+
+    def _build_tray_menu(self):
+        return Menu(
+            MenuItem("Meetings", Menu(
+                MenuItem("Open Meetings", self._open_meetings, default=True),
+                MenuItem("New meeting", self._open_new_meeting),
+                Menu.SEPARATOR,
+                MenuItem(lambda item: "Resume meeting" if self._meeting_paused() else "Pause meeting",
+                         self._meeting_pause_resume, visible=lambda item: self._meeting_capturing()),
+                MenuItem("Stop meeting and save", self._meeting_stop, visible=lambda item: self._meeting_capturing()),
+            ), visible=lambda item: self.meetings is not None),
+            MenuItem("Settings", self._open_settings),
+            Menu.SEPARATOR,
+            MenuItem("Quit", self._quit),
+        )
 
     def local_audio_at(self, directory):
         """Keep each location alive while recordings and downloads still use it."""
@@ -2394,8 +2541,12 @@ class OwnkeyApp:
             "processing": f"{APP_NAME} — Processing...",
         }
         tooltip = labels.get(state, APP_NAME)
+        icon_state = state
+        if state == "idle" and self._meeting_capturing():
+            icon_state = "recording"
+            tooltip = f"{APP_NAME} — Meeting {'paused' if self._meeting_paused() else 'recording'}"
         if self._tray:
-            self._tray.icon = make_icon(state)
+            self._tray.icon = make_icon(icon_state)
             self._tray.title = tooltip
         if state == "processing":
             message = "Rewriting..." if self._record_mode == "rewrite" else "Transcribing..."
@@ -2485,6 +2636,8 @@ class OwnkeyApp:
             return  # debounce repeated key-down events
         mode = self._hotkey_mode_for(key)
         if mode is None:
+            return
+        if self._meeting_blocks_hotkeys():
             return
         self._down = True
         self._start_recording(mode)
@@ -2968,6 +3121,8 @@ class OwnkeyApp:
         self._ui_commands.put("settings")
 
     def _quit(self, icon=None, item=None) -> None:
+        if self._meeting_capturing() and not self._confirm_stop_meeting():
+            return
         self._ui_commands.put("quit")
 
     def _poll_ui_commands(self) -> None:
@@ -2989,6 +3144,17 @@ class OwnkeyApp:
     def _shutdown(self) -> None:
         self._shutting_down = True
         self._recording = False
+        if getattr(self, "meeting_server", None) is not None:
+            try:
+                self.meeting_server.stop()
+            except Exception:
+                pass
+        if getattr(self, "meetings", None) is not None:
+            # Stop and save any running capture; transcription resumes on the next start.
+            try:
+                self.meetings.close()
+            except Exception:
+                pass
         self._settings._on_close()
         if self._listener:
             try:
@@ -3067,11 +3233,7 @@ class OwnkeyApp:
                 APP_NAME, "Keyboard setup is incomplete.\n\n" + error, parent=self._ui_root))
 
         icon_image = make_icon("idle")
-        menu = Menu(
-            MenuItem("Settings", self._open_settings),
-            Menu.SEPARATOR,
-            MenuItem("Quit", self._quit),
-        )
+        menu = self._build_tray_menu()
         self._tray = pystray.Icon(
             APP_NAME,
             icon=icon_image,
@@ -3079,6 +3241,12 @@ class OwnkeyApp:
             menu=menu,
         )
         self._tray.run_detached()
+        if self.meetings is not None and self.meetings.interrupted_on_start:
+            self._ui_root.after(1500, lambda: self._tray and self._tray.notify(
+                "A meeting was interrupted last time. Open Meetings to transcribe what was saved.",
+                title=f"{APP_NAME} — Meetings"))
+        if "--meetings" in sys.argv:
+            self._open_meetings()
         if "--settings" in sys.argv or (sys.platform.startswith("linux")
                 and provider_requires_key(audio_provider, audio_endpoint)
                 and not get_effective_api_key(self.cfg)):

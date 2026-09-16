@@ -67,9 +67,19 @@ class LocalAttempt:
             on_loading()
         return self.service._executor.submit(self._decode_when_ready, wav_bytes, vocabulary).result()
 
+    def transcribe_timed(self, wav_bytes, vocabulary=()):
+        """Decode and keep token timing: (text, tokens, timestamps, durations)."""
+        if self._closed:
+            raise ModelError("This local recording has already finished.")
+        return self.service._executor.submit(self._decode_timed_when_ready, wav_bytes, vocabulary).result()
+
     def _decode_when_ready(self, wav_bytes, vocabulary):
         self.ready.result()
         return self.service._decode(wav_bytes, vocabulary)
+
+    def _decode_timed_when_ready(self, wav_bytes, vocabulary):
+        self.ready.result()
+        return self.service._decode(wav_bytes, vocabulary, timed=True)
 
     def close(self):
         with self.service._lock:
@@ -164,7 +174,7 @@ class LocalTranscriber:
                 self._last_used = self._clock()
                 self._maybe_unload()
 
-    def _decode(self, wav_bytes, vocabulary=()):
+    def _decode(self, wav_bytes, vocabulary=(), timed=False):
         with self._lock:
             if self._closed:
                 raise ModelError("Local transcription is shutting down.")
@@ -180,7 +190,16 @@ class LocalTranscriber:
                 try:
                     stream.accept_waveform(SAMPLE_RATE, samples)
                     self._recognizer.decode_stream(stream)
-                    return stream.result.text.strip()
+                    result = stream.result
+                    if not timed:
+                        return result.text.strip()
+                    # Meetings keep token timing so passages can carry timestamps.
+                    return (
+                        result.text.strip(),
+                        list(getattr(result, "tokens", []) or []),
+                        [float(t) for t in getattr(result, "timestamps", []) or []],
+                        [float(d) for d in getattr(result, "durations", []) or []],
+                    )
                 finally:
                     del stream
         finally:

@@ -219,6 +219,20 @@ Filler words, and Rewriting.
   instruction, sends both to the configured rewrite provider, and replaces the
   selection with the result.
 
+### Meetings
+
+Right-click the tray icon → **Meetings** → **New meeting**. Ownkey records
+your microphone and, if you choose, the system audio of a call, keeps both
+tracks on your PC, and transcribes them after Stop with the local Orukeet model
+(install it under Settings › Transcription first). The meeting window has three
+tabs: **My thoughts** (your notes, never touched by AI), **Transcript** (timed
+passages you can correct, search and play back) and **Summary** (decisions,
+action items and open questions with citations, plus questions and a follow-up
+draft). Summaries and answers use the rewrite provider from Settings and ask
+before the first remote request; audio never leaves the PC. Export as Markdown
+or JSON at any time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
+for what is built and verified.
+
 ## 05 · Bring your own key
 
 Local (Orukeet) needs no API key. For cloud transcription:
