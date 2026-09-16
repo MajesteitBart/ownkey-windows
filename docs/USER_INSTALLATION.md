@@ -24,11 +24,15 @@ OpenRouter, a custom OpenAI-compatible server, or local Ollama.
    Start menu or desktop shortcut.
 5. Right-click the Ownkey tray icon and choose **Settings**.
 6. On the **Transcription** page choose **Local (Orukeet)** and click
-   **Download**, or pick a cloud provider and enter its API key. Optionally set
-   up a **Rewriting** provider: enter the key, refresh the model list, choose a
-   model, and click **Save**.
-7. Add your name and the terms you use on the **Dictionary** page so they are
+   **Download**. Wait until the status reads **Installed · Not active** before
+   you continue; saving while the download is still running fails. Or pick a
+   cloud provider and enter its API key.
+7. Optionally set up a **Rewriting** provider: enter the key, refresh the model
+   list, and choose a model.
+8. On the **Dictionary** page add your name and the terms you use, so they are
    typed the way you spell them.
+9. Click **Save**. Settings and dictionary entries are only stored when you
+   save.
 
 The public `v0.3.0` installer published before the signing pipeline is unsigned,
 so Windows may show an **Unknown publisher** warning. Verify that an older
