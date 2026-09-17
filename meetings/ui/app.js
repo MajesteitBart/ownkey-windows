@@ -356,10 +356,14 @@
     if (m.state === 'interrupted' && m.audio_state === 'kept' && !tj) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>This recording was interrupted.</b><p>${esc((d.events.filter((e) => e.kind === 'interrupted').pop() || {}).detail || 'Ownkey stopped capturing.')} ${fmt(m.elapsed)} of audio and your notes are saved. Nothing resumed on its own.</p></div><div class="acts"><button class="btn primary xs" data-transcribe>${ico('play', 12)}Transcribe now</button></div></div>`);
     const engine = (state.status || {}).transcriber || {};
     if (tj && !d.live) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">${engine.kind === 'cloud' ? `Transcribing with ${esc(engine.label)}${engine.remote ? ' (remote)' : ''}` : 'Transcribing on this PC'}</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
-    const failed = ['transcribe', 'speakers', 'summary', 'draft'].map(lastJob).filter((j) => j && j.state === 'error'
+    const failed = ['transcribe', 'speakers', 'summary', 'draft'].map(lastJob).filter((j) => j && ['error', 'interrupted'].includes(j.state) && !runningJob(j.kind)
       && (j.kind === 'transcribe' || (j.kind === 'speakers' && state.tab === 'transcript') || ((j.kind === 'summary' || j.kind === 'draft') && state.tab === 'summary')));
     const names = { transcribe: 'Transcription', speakers: 'Speaker labelling', summary: 'Summary', draft: 'Draft' };
-    for (const job of failed) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>${names[job.kind]} failed.</b><p>${esc(job.error)}</p></div><div class="acts">${job.kind === 'transcribe' ? `<button class="btn secondary xs" data-transcribe>${ico('refresh', 12)}Retry</button>` : job.kind === 'speakers' ? `<button class="btn secondary xs" data-speakers>${ico('refresh', 12)}Retry</button>` : ''}</div></div>`);
+    for (const job of failed) {
+      const interrupted = job.state === 'interrupted';
+      const retry = !live() && (['summary', 'draft'].includes(job.kind) || m.audio_state === 'kept');
+      out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>${names[job.kind]} ${interrupted ? 'was interrupted' : 'failed'}.</b><p>${esc(interrupted ? 'Ownkey closed before processing finished. Saved text and notes are unchanged.' : job.error)}</p></div><div class="acts">${retry ? `<button class="btn secondary xs" data-${job.kind}>${ico('refresh', 12)}Retry</button>` : ''}</div></div>`);
+    }
     const pj = runningJob('speakers');
     if (pj && state.tab === 'transcript') out.push(`<div class="banner neutral">${ico('users', 16)}<div class="body"><b><span class="shimmer">Labelling speakers with pyannoteAI</span></b><p>${esc(pj.detail || '')} · the track was uploaded for this step only.</p></div></div>`);
     if (sj || dj) out.push(`<div class="banner neutral">${ico('sparkle', 16)}<div class="body"><b><span class="shimmer">${sj ? 'Generating the summary' : 'Drafting the follow-up'}</span></b><p>${esc((sj || dj).detail || '')}</p></div></div>`);

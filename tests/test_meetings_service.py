@@ -415,6 +415,59 @@ class RetentionTests(unittest.TestCase):
                 self.assertFalse(service._maintenance.is_alive())
 
 
+class ShutdownTests(unittest.TestCase):
+    def test_shutdown_during_provider_call_persists_interruption(self):
+        from meetings import audio
+        for kind in ('transcribe', 'speakers'):
+            for fails in (False, True):
+                with self.subTest(kind=kind, fails=fails), tempfile.TemporaryDirectory() as directory:
+                    started, release = threading.Event(), threading.Event()
+                    def provider(*args, **kwargs):
+                        started.set()
+                        if not release.wait(5):
+                            raise RuntimeError('Test did not release provider')
+                        if fails:
+                            raise RuntimeError('Provider stopped during shutdown')
+                        return 'Synthetic delayed text.' if kind == 'transcribe' else []
+                    class Diarizer:
+                        diarize_wav = staticmethod(provider)
+                    store = MeetingStore(directory)
+                    service = MeetingService(store, get_config=lambda: {
+                        'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'test',
+                        'meetings_audio_endpoint': 'https://example.invalid', 'meetings_audio_api_key': 'synthetic'},
+                        cloud_transcriber=provider, diarizer_factory=lambda cfg: Diarizer())
+                    mid = store.create_meeting('Synthetic shutdown test', {'mic': {}})['id']
+                    store.update_meeting(mid, state='stopped')
+                    path = store.audio_dir(mid, MIC) / 'test.wav'
+                    audio.write_wav(str(path), np.full(16000, 3000, dtype=np.int16))
+                    store.add_chunk(mid, MIC, 0, 0, 16000, str(path))
+                    job = store.create_job(mid, kind)
+                    service._jobs.put(job['id'])
+                    closer = None
+                    try:
+                        self.assertTrue(started.wait(3))
+                        closer = threading.Thread(target=service.close)
+                        closer.start()
+                        self.assertTrue(wait_for(lambda: service._closed))
+                        release.set()
+                        closer.join(3)
+                        self.assertFalse(closer.is_alive())
+                        recovered = MeetingStore(directory)
+                        try:
+                            # Inspect the persisted result before startup reconciliation.
+                            self.assertEqual(recovered.get_job(job['id'])['state'], 'interrupted')
+                            self.assertEqual(recovered.get_meeting(mid)['audio_state'], 'kept')
+                            self.assertEqual(recovered.list_passages(mid), [])
+                            self.assertTrue(path.exists())
+                        finally:
+                            recovered.close()
+                    finally:
+                        release.set()
+                        if closer:
+                            closer.join(3)
+                        service.close()
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

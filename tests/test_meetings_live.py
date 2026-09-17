@@ -287,6 +287,40 @@ class LiveServiceTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get_passage(mid, first['id']))
         self.assertEqual(self.recognizer.calls, 3)
 
+    def test_restart_exposes_partial_transcript_and_retry_resumes_checkpoint(self):
+        mid = self.start()['id']
+        self.phrase()
+        self.assertTrue(wait_for(lambda: self.store.list_passages(mid)))
+        first = self.store.list_passages(mid)[0]
+        self.service.correct_passage(mid, first['id'], 'Synthetic saved correction.')
+        self.recognizer.entered.clear()
+        self.recognizer.block = threading.Event()
+        self.sources['mic'].push(speech(2))
+        self.service.stop()
+        self.assertTrue(self.recognizer.entered.wait(3))
+        closer = threading.Thread(target=self.service.close)
+        closer.start()
+        try:
+            self.assertTrue(wait_for(lambda: self.service._closed))
+        finally:
+            self.recognizer.block.set()
+            closer.join(4)
+        self.assertFalse(closer.is_alive())
+        recovered = MeetingStore(self.directory.name)
+        restarted = MeetingService(recovered, get_config=lambda: {}, local_models=FakeModels(),
+                                   local_transcriber=FakeRecognizer())
+        try:
+            detail = restarted.meeting_detail(mid)
+            self.assertEqual(detail['jobs'][-1]['state'], 'interrupted')
+            self.assertEqual(detail['meeting']['state'], 'stopped')
+            retry = restarted.transcribe(mid)
+            self.assertTrue(wait_for(lambda: recovered.get_job(retry['id'])['state'] == 'done'))
+            self.assertEqual(recovered.processed_samples(mid, 'mic'), 7 * RATE)
+            self.assertEqual(recovered.get_passage(mid, first['id'])['corrected'], 'Synthetic saved correction.')
+            self.assertEqual(len(recovered.list_passages(mid)), 2)
+        finally:
+            restarted.close()
+
     def test_cloud_and_speaker_permissions_are_separate_and_precede_capture(self):
         self.cfg.update(meetings_audio_provider='mistral', meetings_audio_endpoint='https://example.invalid/audio',
                         meetings_audio_model='test', meetings_audio_api_key='test', pyannote_api_key='test')

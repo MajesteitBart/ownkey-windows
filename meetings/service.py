@@ -782,12 +782,16 @@ class MeetingService:
         incremental = bool(self.store.live_options(meeting_id))
         found = []
         for source in targets:
+            if should_stop():
+                return
             label = SOURCE_LABELS.get(source, source)
             self.store.update_job(job["id"], detail=f"Uploading {label}", progress=0.1)
             segments = client.diarize_wav(
                 self.audio_wav(meeting_id, source), f"{meeting_id}-{source}.wav", should_stop=should_stop,
                 on_status=lambda status, label=label: self.store.update_job(
                     job["id"], detail=f"{label} · pyannoteAI {status}", progress=0.5))
+            if should_stop():
+                return
             mine = [p for p in passages if p["source"] == source]
             others = [p for p in passages if p["source"] != source]
             labelled, speakers = diarization.assign_speakers(mine, segments, source=source, fallback_speaker=source,
@@ -822,6 +826,9 @@ class MeetingService:
             job = self.store.get_job(job_id)
             if job is None or job["state"] != "queued":
                 continue
+            if self._closed:
+                self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
+                continue
             if job["meeting_id"] in self._cancelled:
                 self.store.update_job(job_id, state="cancelled")
                 continue
@@ -840,6 +847,8 @@ class MeetingService:
                     raise MeetingError(f"Unknown job {job['kind']}")
                 if job["meeting_id"] in self._cancelled:
                     self.store.update_job(job_id, state="cancelled")
+                elif self._closed:
+                    self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
                 else:
                     self.store.update_job(job_id, state="done", progress=1.0, error="")
                     if job['kind'] in ('transcribe', 'speakers'):
@@ -847,6 +856,9 @@ class MeetingService:
             except Exception as exc:
                 if job["meeting_id"] in self._cancelled:
                     self.store.update_job(job_id, state="cancelled")
+                    continue
+                if self._closed:
+                    self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
                     continue
                 message = describe_error(exc)
                 self.store.update_job(job_id, state="error", error=message)
