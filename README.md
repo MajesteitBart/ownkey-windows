@@ -239,6 +239,14 @@ Speaker 1, Speaker 2, … for you to name. Export as Markdown or JSON at any
 time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
 for what is built and verified.
 
+<p align="center">
+  <img src="assets/readme/meetings-transcript.png" alt="The Ownkey meeting window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">
+</p>
+
+More screens: [recording with notes](assets/readme/meetings-recording.png),
+[summary, questions and follow-up draft](assets/readme/meetings-summary.png),
+[new meeting](assets/readme/meetings-new.png).
+
 ## 05 · Bring your own key
 
 Local (Orukeet) needs no API key. For cloud transcription:

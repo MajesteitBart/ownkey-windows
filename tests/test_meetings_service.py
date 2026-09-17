@@ -249,6 +249,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual((names["mic-1"], names["mic-2"]), ("Speaker 1", "Speaker 2"))
         self.assertEqual(names["system-1"], "Speaker 3", "numbering continues across tracks; no second Speaker 1")
         self.assertEqual(names["system-2"], "Femke", "a confirmed name survives relabelling")
+        self.assertEqual([s["id"] for s in self.store.list_speakers(meeting["id"])],
+                         ["mic", "system", "mic-1", "mic-2", "system-1", "system-2"], "chips follow the numbering")
         self.assertEqual({p["speaker_id"] for p in self.store.list_passages(meeting["id"]) if p["source"] == "mic"}, {"mic-1", "mic-2"})
         with self.assertRaises(MeetingError):
             self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["bogus"])

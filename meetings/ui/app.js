@@ -7,6 +7,7 @@
   const TOKEN = PARAMS.get('token') || '';
   const START_VIEW = PARAMS.get('view') || '';
   const START_TAB = ['thoughts', 'transcript', 'summary'].includes(PARAMS.get('tab')) ? PARAMS.get('tab') : '';
+  const START_MEETING = PARAMS.get('meeting') || '';
   if (TOKEN) history.replaceState(null, '', location.pathname);
 
   const ICONS = {
@@ -505,6 +506,7 @@
     const cap = state.status.capture;
     if (cap && (cap.state === 'recording' || cap.state === 'paused')) await openMeeting(cap.meeting_id, 'thoughts');
     else if (START_VIEW === 'new') { state.view = 'new'; await loadDevices(); render(); }
+    else if (START_MEETING && state.meetings.some((m) => m.id === START_MEETING)) await openMeeting(START_MEETING, START_TAB || undefined);
     else if (state.meetings.length) await openMeeting(state.meetings[0].id, START_TAB || undefined);
     else { state.view = 'empty'; render(); }
     tick();

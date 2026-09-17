@@ -652,6 +652,7 @@ class MeetingService:
             passages = others + labelled
         if should_stop():
             return
+        self.store.order_speakers(meeting_id, [s["id"] for s in found])  # chips follow the numbering
         merged = merge_tracks({"all": passages})
         rev = self.store.get_meeting(meeting_id)["transcript_rev"] + 1
         self.store.replace_passages(meeting_id, merged, rev)

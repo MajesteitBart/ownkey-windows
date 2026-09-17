@@ -311,6 +311,16 @@ class MeetingStore:
             return _row(self._conn.execute(
                 "SELECT * FROM speakers WHERE meeting_id = ? AND id = ?", (meeting_id, speaker_id)).fetchone())
 
+    def order_speakers(self, meeting_id: str, ordered_ids: list[str]) -> None:
+        """Puts the given speakers last, in the given order; the others keep their relative order."""
+        with self._tx():
+            rows = self._conn.execute(
+                "SELECT id FROM speakers WHERE meeting_id = ? ORDER BY position", (meeting_id,)).fetchall()
+            rest = [r["id"] for r in rows if r["id"] not in ordered_ids]
+            for position, speaker_id in enumerate(rest + list(ordered_ids)):
+                self._conn.execute("UPDATE speakers SET position = ? WHERE meeting_id = ? AND id = ?",
+                                   (position, meeting_id, speaker_id))
+
     def list_speakers(self, meeting_id: str) -> list[dict]:
         with self._lock:
             return [dict(r) for r in self._conn.execute(

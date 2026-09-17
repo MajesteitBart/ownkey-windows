@@ -1,6 +1,6 @@
 # Ownkey Meetings: what is built
 
-Status on 16 September 2026. This describes the code in `meetings/` and its
+Status on 17 September 2026. This describes the code in `meetings/` and its
 tray integration, against the proposal in `MEETINGS_SPEC.md`. It is a first
 usable slice, not the whole spec.
 
@@ -108,7 +108,7 @@ usable slice, not the whole spec.
 
 ## Verified on this machine
 
-- 190 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
+- 205 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
   capture session (timeline, pause, padding, overrun, dead source), windowing
   and passage building, analysis prompts and citation validation, export,
   service jobs, HTTP API, tray integration, config normalization.
@@ -146,8 +146,24 @@ usable slice, not the whole spec.
   speech have not been tried; pyannoteAI documents no size limit.
 - Code-switching without a pause inside one window can still lose words;
   the pause-based windowing only helps when speakers pause between turns.
-- Packaging: `Ownkey.spec` now bundles `meetings/ui` and the `soundcard`
-  data files, but no installer was built in this session.
+- Packaging: `Ownkey.spec` bundles `meetings/ui` and the `soundcard` data
+  files. An unsigned development installer (0.6.0) was built and its frozen
+  `Ownkey.exe --local-smoke-test` passed, but the installer itself was not
+  run on a clean machine.
+
+## Screenshots
+
+Taken from the real window in `assets/readme/`, with the development
+harness feeding synthetic speech clips as the microphone and call audio, so
+the transcripts repeat two test sentences. Everything else in them is what
+the app does today.
+
+| File | What it shows |
+|---|---|
+| `meetings-recording.png` | A meeting recording both tracks with live meters, Pause and Stop, and notes in My thoughts |
+| `meetings-transcript.png` | A transcript after speaker labels on a shared microphone and call audio: Speaker 1 to 3 to confirm, search, playback, retention |
+| `meetings-summary.png` | Summary with the remote-model line, two questions (one refused for lack of a passage) and a follow-up draft |
+| `meetings-new.png` | New meeting: sources, devices, the shared-microphone option, readiness rows and retention |
 
 ## Development harness
 
