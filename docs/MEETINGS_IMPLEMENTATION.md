@@ -1,5 +1,7 @@
 # Ownkey Meetings: what is built
 
+The recording-time transcription and live speaker additions are documented in [MEETINGS_LIVE_PLAN.md](MEETINGS_LIVE_PLAN.md). That document supersedes the transcription-after-Stop behavior below when **Transcribe while recording** is enabled.
+
 Status on 17 September 2026. This describes the code in `meetings/` and its
 tray integration, against the proposal in `MEETINGS_SPEC.md`. It is a first
 usable slice, not the whole spec.

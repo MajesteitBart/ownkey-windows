@@ -76,6 +76,7 @@ ROUTES = [
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)", "rename"),
     ("DELETE", r"/api/meetings/(?P<mid>[\w-]+)", "delete"),
     ("POST", r"/api/meetings/(?P<mid>[\w-]+)/(?P<action>pause|resume|stop|transcribe|speakers|summary|draft|ask|remove-audio)", "action"),
+    ("GET", r"/api/meetings/(?P<mid>[\w-]+)/live", "live_status"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/notes", "notes"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/passages/(?P<pid>[\w-]+)", "passage"),
     ("PUT", r"/api/meetings/(?P<mid>[\w-]+)/speakers/(?P<sid>[\w-]+)", "speaker"),
@@ -137,7 +138,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _authorized(self, query: dict) -> bool:
         token = self.owner.token
-        supplied = self.headers.get("X-Ownkey-Token") or self._cookie_token() or (query.get("token") or [""])[0]
+        supplied = self.headers.get("X-Ownkey-Token") or (query.get("token") or [""])[0] or self._cookie_token()
         return secrets.compare_digest(supplied or "", token)
 
     def _dispatch(self) -> None:
@@ -212,11 +213,16 @@ class _Handler(BaseHTTPRequestHandler):
         meeting = self.owner.service.start_meeting(
             str(body.get("title", "")), mic=bool(body.get("mic", True)), system=bool(body.get("system", True)),
             mic_device=body.get("mic_device"), system_device=body.get("system_device"),
-            retention=body.get("retention"), mic_shared=bool(body.get("mic_shared")))
+            retention=body.get("retention"), mic_shared=bool(body.get("mic_shared")),
+            live_transcription=bool(body.get('live_transcription')), live_speakers=bool(body.get('live_speakers')),
+            live_transcription_ok=bool(body.get('live_transcription_ok')), live_speakers_ok=bool(body.get('live_speakers_ok')))
         self._json(HTTPStatus.CREATED, {"meeting": meeting})
 
     def h_meeting(self, query, mid):
         self._json(HTTPStatus.OK, self.owner.service.meeting_detail(mid))
+
+    def h_live_status(self, query, mid):
+        self._json(HTTPStatus.OK, self.owner.service.live_status(mid))
 
     def h_rename(self, query, mid):
         body = self._body()
@@ -236,7 +242,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def h_action(self, query, mid, action):
         service = self.owner.service
-        body = self._body() if action in ("summary", "draft", "ask", "speakers", "transcribe") else {}
+        # Consume even an empty JSON body before reusing the HTTP/1.1 connection.
+        body = self._body()
         remote_ok = bool(body.get("remote_ok"))
         if action == "transcribe":
             return self._json(HTTPStatus.ACCEPTED, {"job": service.transcribe(mid, remote_ok=remote_ok)})
@@ -307,12 +314,13 @@ class _Handler(BaseHTTPRequestHandler):
     def h_policy(self, query):
         body = self._body()
         service = self.owner.service
-        for kind in ("remote", "upload", "transcription"):
+        for kind in ("remote", "upload", "transcription", "live_transcription", "live_speakers"):
             if kind in body:
                 service.set_policy(kind, str(body.get(kind)))
         self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(), "upload_policy": service.upload_policy(),
                                    "transcription_policy": service.transcription_policy()})
 
     def h_open_settings(self, query):
+        self._body()
         self.owner.service.open_settings()
         self._json(HTTPStatus.OK, {"ok": True})

@@ -13,12 +13,33 @@ import secrets
 import sqlite3
 import threading
 import time
+import wave
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS live_sessions (
+    meeting_id TEXT PRIMARY KEY,
+    options TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS transcription_windows (
+    meeting_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    start_sample INTEGER NOT NULL,
+    end_sample INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, source, start_sample)
+);
+CREATE TABLE IF NOT EXISTS speaker_turns (
+    meeting_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    speaker_id TEXT NOT NULL,
+    start REAL NOT NULL,
+    end REAL,
+    PRIMARY KEY (meeting_id, speaker_id, start)
+);
 CREATE TABLE IF NOT EXISTS meetings (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
@@ -239,7 +260,8 @@ class MeetingStore:
 
     def delete_meeting(self, meeting_id: str) -> None:
         with self._tx():
-            for table in ("chunks", "events", "speakers", "passages", "notes", "analyses", "jobs"):
+            for table in ("chunks", "events", "speakers", "passages", "notes", "analyses", "jobs",
+                          "live_sessions", "transcription_windows", "speaker_turns"):
                 self._conn.execute(f"DELETE FROM {table} WHERE meeting_id = ?", (meeting_id,))
             self._conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
 
@@ -267,6 +289,87 @@ class MeetingStore:
     def delete_chunks(self, meeting_id: str) -> None:
         with self._tx():
             self._conn.execute("DELETE FROM chunks WHERE meeting_id = ?", (meeting_id,))
+
+    def read_audio(self, meeting_id: str, source: str, start: int, end: int):
+        """Read a bounded sample range without concatenating a whole meeting."""
+        import numpy as np
+
+        if end <= start:
+            return np.zeros(0, dtype=np.int16)
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(
+                "SELECT * FROM chunks WHERE meeting_id=? AND source=? AND start_sample < ? "
+                "AND start_sample+n_samples > ? ORDER BY seq", (meeting_id, source, end, start))]
+        result = np.zeros(end - start, dtype=np.int16)
+        for row in rows:
+            a, b = max(start, row['start_sample']), min(end, row['start_sample'] + row['n_samples'])
+            with wave.open(row['path'], 'rb') as handle:
+                handle.setpos(a - row['start_sample'])
+                samples = np.frombuffer(handle.readframes(b - a), dtype='<i2')
+                if samples.size != b - a:
+                    raise OSError('A saved audio chunk is incomplete. The remaining audio is kept.')
+                result[a - start:b - start] = samples
+        return result
+
+    def set_live_options(self, meeting_id: str, options: dict) -> None:
+        with self._tx():
+            self._conn.execute('INSERT OR REPLACE INTO live_sessions VALUES (?, ?)',
+                               (meeting_id, json.dumps(options)))
+
+    def live_options(self, meeting_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute('SELECT options FROM live_sessions WHERE meeting_id=?', (meeting_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def processed_samples(self, meeting_id: str, source: str) -> int:
+        with self._lock:
+            return int(self._conn.execute('SELECT COALESCE(MAX(end_sample),0) FROM transcription_windows '
+                                          'WHERE meeting_id=? AND source=?', (meeting_id, source)).fetchone()[0])
+
+    def commit_window(self, meeting_id: str, job_id: str, source: str, start: int, end: int,
+                      reason: str, passages: list[dict]) -> bool:
+        """One transaction owns the audio range, its text, and the retry cursor."""
+        with self._tx():
+            meeting = self._conn.execute('SELECT transcript_rev FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+            job = self._conn.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not meeting or not job or job[0] != 'running':
+                return False
+            if self.processed_samples(meeting_id, source) != start:
+                return False
+            self._conn.execute('INSERT INTO transcription_windows VALUES (?, ?, ?, ?, ?)',
+                               (meeting_id, source, start, end, reason))
+            position = self._conn.execute('SELECT COALESCE(MAX(position),-1)+1 FROM passages WHERE meeting_id=?',
+                                          (meeting_id,)).fetchone()[0]
+            rev = meeting[0] + 1
+            for i, p in enumerate(passages):
+                pid = f'{source}-{start:012d}-{i:03d}'
+                self._conn.execute('INSERT INTO passages '
+                    '(meeting_id,id,position,source,speaker_id,start,"end",text,quality,rev,tokens) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                    (meeting_id, pid, position+i, source, p['speaker_id'], p['start'], p['end'], p['text'],
+                     p.get('quality','timed'), rev, _tokens_json(p.get('tokens'))))
+            if passages:
+                self._conn.execute('UPDATE meetings SET transcript_rev=?,updated_at=? WHERE id=?',
+                                   (rev, self._clock(), meeting_id))
+            return True
+
+    def speaker_turn(self, meeting_id: str, source: str, speaker_id: str, at: float, starting: bool) -> None:
+        with self._tx():
+            if not self._conn.execute('SELECT 1 FROM meetings WHERE id=?', (meeting_id,)).fetchone():
+                return
+            if starting:
+                self._conn.execute('INSERT OR IGNORE INTO speaker_turns VALUES (?,?,?,?,NULL)',
+                                   (meeting_id, source, speaker_id, at))
+            else:
+                self._conn.execute('UPDATE speaker_turns SET end=MAX(start,?) '
+                                   'WHERE meeting_id=? AND speaker_id=? AND end IS NULL', (at, meeting_id, speaker_id))
+
+    def speaker_segments(self, meeting_id: str, source: str, start: float, end: float) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(
+                'SELECT speaker_id AS speaker,start,COALESCE(end,?) AS end FROM speaker_turns '
+                'WHERE meeting_id=? AND source=? AND start < ? AND (end IS NULL OR end > ?) ORDER BY start',
+                (end, meeting_id, source, end, start))]
 
     def add_event(self, meeting_id: str, at: float, kind: str, detail: str = "") -> None:
         with self._tx():
@@ -300,6 +403,8 @@ class MeetingStore:
     # ── speakers ───────────────────────────────────────────────────
     def ensure_speaker(self, meeting_id: str, speaker_id: str, source: str, name: str, confirmed: bool = False) -> dict:
         with self._tx():
+            if not self._conn.execute('SELECT 1 FROM meetings WHERE id=?', (meeting_id,)).fetchone():
+                return None
             existing = self._conn.execute(
                 "SELECT * FROM speakers WHERE meeting_id = ? AND id = ?", (meeting_id, speaker_id)).fetchone()
             if existing is None:

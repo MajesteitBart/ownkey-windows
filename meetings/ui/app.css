@@ -299,3 +299,10 @@ svg { display: block; }
 @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
 @keyframes pop-in { from { opacity: 0; transform: scale(.95) } to { opacity: 1; transform: scale(1) } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+/* Live status updates without replacing the notes editor or transcript. */
+.live-status { display:flex; align-items:center; gap:20px; flex-wrap:wrap; padding:10px 28px; border-bottom:1px solid var(--line); font-size:12px; }
+.live-status[hidden] { display:none; }
+.live-status > span { display:inline-flex; align-items:center; gap:6px; }
+.speaking-now { color:var(--accent, #526341); }
+.live-options .hint { margin:6px 0 16px 23px; }
+.live-options .hint:last-child { margin-bottom:0; }

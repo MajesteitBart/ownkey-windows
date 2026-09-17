@@ -68,7 +68,7 @@
   const state = {
     status: null, meetings: [], view: 'empty', meetingId: null, detail: null, tab: 'thoughts',
     query: '', editing: null, showOriginal: new Set(), devices: null, playing: false, playTime: 0,
-    form: { title: '', mic: true, system: true, mic_device: '', system_device: '', retention: 'days7', mic_shared: false },
+    form: { title: '', mic: true, system: true, mic_device: '', system_device: '', retention: 'days7', mic_shared: false, live_transcription: true, live_speakers: false },
     noteTimer: null, noteSaved: 'idle', menu: null,
   };
 
@@ -96,6 +96,7 @@
   function consentDialog(consent) {
     const policyKey = consent.policy_key || 'remote';
     const upload = consent.kind === 'upload' || consent.kind === 'transcribe';
+    const liveConsent = policyKey === 'live_speakers' || policyKey === 'live_transcription';
     return new Promise((resolve) => {
       const d = dialog(`<div class="mh"><span class="eyebrow">${upload ? 'Before the first audio upload' : 'Before the first remote analysis'}</span>
         <h2>${esc(consent.title || `Ownkey will send meeting text to ${consent.provider}`)}</h2>
@@ -104,9 +105,9 @@
           <dt>Provider</dt><dd>${esc(consent.provider)} · <span class="mono">${esc(consent.model)}</span><span class="ink-3">${esc(consent.host)}</span></dd>
           <dt>Sent</dt><dd>${(consent.sent || []).map((s) => `<span class="pill ${upload ? 'amber' : ''}">${esc(s)}</span>`).join('')}</dd>
           <dt>Not sent</dt><dd>${(consent.not_sent || []).map((s) => `<span class="pill green">${esc(s)}</span>`).join('')}</dd>
-        </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${esc(consent.provider)}</label></div>
+        </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${liveConsent ? (policyKey === 'live_speakers' ? 'live speaker labels' : 'live transcription') : esc(consent.provider)}</label></div>
         ${consent.retention ? `<p class="hint" style="margin-top:8px">${esc(consent.retention)}</p>` : ''}</div>
-        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${consent.kind === 'transcribe' ? 'Upload and transcribe' : upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
+        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${liveConsent ? (policyKey === 'live_speakers' ? 'Start live speaker labels' : 'Start live transcription') : consent.kind === 'transcribe' ? 'Upload and transcribe' : upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
       $('[data-no]', d.root).onclick = () => { d.close(); resolve(false); };
       $('[data-yes]', d.root).onclick = async () => {
         const remember = $('[data-remember]', d.root).checked;
@@ -135,7 +136,7 @@
   async function loadDevices() { if (!state.devices) { try { state.devices = await get('/api/devices'); } catch (e) { state.devices = { inputs: [], outputs: [], note: e.message }; } } }
 
   // ── rendering ────────────────────────────────────────────────
-  function render() { renderSidebar(); renderMain(); }
+  function render() { state.liveStatusHTML = null; renderSidebar(); renderMain(); }
 
   function renderSidebar() {
     const status = state.status || {};
@@ -143,7 +144,7 @@
     const items = state.meetings.map((m) => {
       const live = cap && cap.meeting_id === m.id && (cap.state === 'recording' || cap.state === 'paused');
       const dot = live ? 'rec' : m.state === 'interrupted' ? 'amber' : m.job ? 'accent' : m.summary_state === 'outdated' ? 'amber' : m.passages ? 'green' : '';
-      const meta = live ? `REC ${fmt(cap.elapsed)}` : m.job ? (m.job.kind === 'transcribe' ? `transcribing ${Math.round((m.job.progress || 0) * 100)}%` : m.job.kind) : `${new Date(m.created_at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' })} · ${fmt(m.elapsed)}`;
+      const meta = live ? `REC ${fmt(cap.elapsed)}` : m.job ? (m.job.kind === 'transcribe' ? (m.incremental ? 'Finishing transcript' : `transcribing ${Math.round((m.job.progress || 0) * 100)}%`) : m.job.kind) : `${new Date(m.created_at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' })} · ${fmt(m.elapsed)}`;
       return `<button class="sb-item ${m.id === state.meetingId ? 'is-active' : ''}" data-open="${m.id}" title="${esc(m.title || 'Untitled meeting')}">
         <span class="t truncate">${esc(m.title || 'Untitled meeting')}</span><span class="m"><span class="dot ${dot}"></span><span class="truncate">${esc(meta)}${m.audio_state === 'removed' ? ' · audio removed' : ''}</span></span></button>`;
     }).join('');
@@ -168,7 +169,7 @@
     if (state.view === 'meeting' && state.detail) { main.innerHTML = renderMeeting(); bindMeeting(); return; }
     const status = state.status || {};
     main.innerHTML = `<div class="doc-scroll"><div class="empty"><h1><span>Ownkey Meetings</span>Record, review, ask.</h1>
-      <p>Audio stays on this PC and is transcribed here with Orukeet. Notes, transcript and summary are yours to keep, export or delete.</p>
+      <p>Record a meeting and see phrases appear as you speak. Use Orukeet on this PC or your selected transcription provider. Notes and transcripts are yours to keep, export or delete.</p>
       <div class="actions"><button class="btn accent md" data-start>${ico('mic', 14)}New meeting</button>${status.local_model && !status.local_model.installed ? `<button class="btn secondary md" data-settings2>${ico('cpu', 14)}Install Orukeet in Settings</button>` : ''}</div></div></div>`;
     $('[data-start]').onclick = () => { state.view = 'new'; loadDevices().then(render); render(); };
     const s2 = $('[data-settings2]'); if (s2) s2.onclick = () => post('/api/settings/open').catch((e) => toast(e.message));
@@ -203,12 +204,18 @@
         </div>
         ${d.note ? `<p class="hint" style="margin-top:8px">${esc(d.note)}</p>` : ''}
       </section>
+      <section><span class="eyebrow">During the meeting</span><div class="card card-pad live-options">
+        <label class="check"><input type="checkbox" data-live-transcription ${f.live_transcription ? 'checked' : ''}>Transcribe while recording</label>
+        <p class="hint">Completed phrases appear after pauses. Long turns are processed in short windows.</p>
+        <label class="check"><input type="checkbox" data-live-speakers ${f.live_speakers ? 'checked' : ''} ${f.live_transcription && (f.system || (f.mic && f.mic_shared)) && (status.speaker_labels || {}).configured ? '' : 'disabled'}>Show live speaker changes with pyannoteAI</label>
+        <p class="hint">Uses call audio and shared microphones. Audio streams to pyannoteAI; Ownkey asks before the first use. ${!(status.speaker_labels || {}).configured ? 'Add a key in Settings to enable this.' : ''}</p>
+      </div></section>
       <section><span class="eyebrow">Readiness</span><div class="card card-pad" style="padding-top:2px;padding-bottom:2px">
         <div class="row"><span class="l">${ico('cpu', 15)}Transcription · ${esc(engine.label || 'Orukeet')}${engine.model ? ` · ${esc(engine.model)}` : ' on this PC'}${engine.follows_dictation ? ' <span class="ink-3">(same as dictation)</span>' : ''}</span><span class="v">${engine.kind === 'cloud'
-          ? (engine.configured ? `<span class="pill ${engine.remote ? 'amber' : 'green'}">${engine.remote ? 'Remote' : 'Local endpoint'}</span><span class="meta">${engine.remote ? (status.transcription_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : 'runs after Stop'}</span>` : '<span class="pill amber">Not configured</span><span class="meta">Settings › Meetings</span>')
-          : (model.installed ? '<span class="pill green">Installed</span><span class="meta">runs after Stop</span>' : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>')}</span></div>
+          ? (engine.configured ? `<span class="pill ${engine.remote ? 'amber' : 'green'}">${engine.remote ? 'Remote' : 'Local endpoint'}</span><span class="meta">${engine.remote ? (status.transcription_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : (f.live_transcription ? 'updates while recording' : 'runs after Stop')}</span>` : '<span class="pill amber">Not configured</span><span class="meta">Settings › Meetings</span>')
+          : (model.installed ? `<span class="pill green">Installed</span><span class="meta">${f.live_transcription ? 'updates while recording' : 'runs after Stop'}</span>` : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>')}</span></div>
         <div class="row"><span class="l">${ico('sparkle', 15)}Summary and questions · ${esc(text.label || text.provider || 'no provider')}${text.model ? ` · ${esc(text.model)}` : ''}</span><span class="v">${text.configured ? `<span class="pill ${text.remote ? 'amber' : 'green'}">${text.remote ? 'Remote' : 'Local'}</span>` : '<span class="pill">Not configured</span>'}<span class="meta">${text.remote ? (status.remote_policy === 'allow' ? 'allowed' : 'asks before first use') : ''}</span></span></div>
-        <div class="row"><span class="l">${ico('users', 15)}Speaker labels · pyannoteAI ${esc((status.speaker_labels || {}).model || '')}</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill amber">Remote</span>' : '<span class="pill">No key</span>'}<span class="meta">${(status.speaker_labels || {}).configured ? (status.upload_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : 'Settings › Meetings'}</span></span></div>
+        <div class="row"><span class="l">${ico('users', 15)}Speaker labels · pyannoteAI ${esc(f.live_speakers ? 'Live-1' : (status.speaker_labels || {}).model || '')}</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill amber">Remote</span>' : '<span class="pill">No key</span>'}<span class="meta">${(status.speaker_labels || {}).configured ? ((f.live_speakers ? status.live_speakers_policy : status.upload_policy) === 'allow' ? 'upload allowed' : 'asks before uploading') : 'Settings › Meetings'}</span></span></div>
         <div class="row"><span class="l">${ico('lock', 15)}Library</span><span class="v"><span class="meta mono">${esc(status.library ? status.library.root : '')}</span></span></div>
       </div></section>
       <section><span class="eyebrow">Audio retention for this meeting</span><div class="card card-pad opts">
@@ -223,7 +230,9 @@
     $('[data-title]').oninput = (e) => { f.title = e.target.value; };
     $$('[data-src]').forEach((b) => b.onclick = () => { const v = b.dataset.src; f.mic = v !== 'system'; f.system = v !== 'mic'; render(); });
     $('[data-mic-device]').onchange = (e) => { f.mic_device = e.target.value; state.micQuietSince = 0; pollMicPreview(); };
-    $('[data-mic-shared]').onchange = (e) => { f.mic_shared = e.target.checked; };
+    $('[data-mic-shared]').onchange = (e) => { f.mic_shared = e.target.checked; render(); };
+    $('[data-live-transcription]').onchange = (e) => { f.live_transcription = e.target.checked; if (!f.live_transcription) f.live_speakers = false; render(); };
+    $('[data-live-speakers]').onchange = (e) => { f.live_speakers = e.target.checked; render(); };
     $('[data-system-device]').onchange = (e) => { f.system_device = e.target.value; };
     $$('[data-retention]').forEach((b) => b.onclick = () => { f.retention = b.dataset.retention; render(); });
     $('[data-cancel]').onclick = () => { state.view = state.meetings.length ? 'empty' : 'empty'; render(); };
@@ -231,9 +240,20 @@
       const button = $('[data-start]'); button.disabled = true;
       try {
         const body = { title: f.title, mic: f.mic, system: f.system, retention: f.retention, mic_shared: f.mic && f.mic_shared };
+        body.live_transcription = f.live_transcription;
+        body.live_speakers = f.live_speakers && f.live_transcription && (f.system || (f.mic && f.mic_shared));
         if (f.mic_device !== '') body.mic_device = Number(f.mic_device);
         if (f.system_device !== '') body.system_device = f.system_device;
-        const created = await post('/api/meetings', body);
+        let created;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try { created = await post('/api/meetings', body); break; }
+          catch (e) {
+            if (!e.consent || !['live_transcription', 'live_speakers'].includes(e.consent.policy_key)) throw e;
+            if (!await consentDialog(e.consent)) { button.disabled = false; return; }
+            body[`${e.consent.policy_key}_ok`] = true;
+          }
+        }
+        if (!created) { button.disabled = false; return; }
         f.title = '';
         await Promise.all([refreshStatus(), refreshList()]);
         await openMeeting(created.meeting.id, 'thoughts');
@@ -303,9 +323,9 @@
     const sources = (Object.keys(m.sources || {}).map((k) => SOURCE[k] ? SOURCE[k].label : k).join(' + ') || 'No sources')
       + (m.sources && m.sources.mic && m.sources.mic.shared ? ' (shared microphone)' : '');
     const tabs = [['thoughts', 'edit', 'My thoughts', d.notes.rev ? `<span class="badge">rev ${d.notes.rev}</span>` : ''],
-      ['transcript', 'text', 'Transcript', runningJob('transcribe') ? `<span class="badge amber">${Math.round((runningJob('transcribe').progress || 0) * 100)}%</span>` : d.passages.length ? `<span class="badge">${d.passages.length}</span>` : ''],
+      ['transcript', 'text', 'Transcript', runningJob('transcribe') ? `<span class="badge amber">${d.live ? 'Live' : `${Math.round((runningJob('transcribe').progress || 0) * 100)}%`}</span>` : d.passages.length ? `<span class="badge">${d.passages.length}</span>` : ''],
       ['summary', 'sparkle', 'Summary', d.summary ? `<span class="badge ${d.summary.outdated ? 'amber' : 'green'}">${d.summary.outdated ? 'outdated' : 'ready'}</span>` : '']];
-    return `${cap ? renderRecBar(cap) : ''}
+    return `${cap ? renderRecBar(cap) : ''}${renderLiveStatus(d.live, cap)}
       <div class="mt-head"><h1 class="mt-title"><input data-rename value="${esc(m.title)}" placeholder="Untitled meeting" spellcheck="false"></h1>
         <div class="mt-meta"><span class="mono tnum">${fmt(cap ? cap.elapsed : m.elapsed)}</span><span class="sep"></span><span>${esc(fmtDate(m.created_at))}</span><span class="sep"></span><span>${esc(sources)}</span><span class="sep"></span>
           ${m.state === 'interrupted' ? '<span class="pill amber">Interrupted</span>' : ''}${m.audio_state === 'removed' ? '<span class="pill">Audio removed</span>' : `<span title="Retention: ${esc(m.retention)}">${ico('cpu', 13)} ${esc(ENGINE[m.engine] || (d.passages.length ? m.engine : ((state.status || {}).transcriber || {}).label || 'Orukeet'))}</span>`}</div>
@@ -321,12 +341,21 @@
       ${cap.gaps ? `<span class="pill amber">${cap.gaps} gap${cap.gaps > 1 ? 's' : ''}</span>` : ''}<span class="grow"></span>
       ${paused ? `<button class="btn accent" data-resume>${ico('play', 13)}Resume</button>` : `<button class="btn secondary" data-pause>${ico('pause', 13)}Pause</button>`}<button class="btn primary" data-stop>${ico('stop', 13)}Stop</button></div>`;
   }
+  function renderLiveStatus(info, cap) {
+    if (!info) return '<div class="live-status" hidden></div>';
+    const titles = { listening: 'Listening for a pause', transcribing: 'Transcribing recent speech', paused: 'Paused', finalizing: 'Finishing the transcript', done: 'Transcript complete', error: 'Transcription needs attention' };
+    const active = cap && cap.state === 'paused' ? [] : (info.active_names || (info.active_speakers || []).map((id) => ((state.detail || {}).speakers || []).find((s) => s.id === id)?.name || 'Speaker'));
+    const streams = Object.values(info.streams || {});
+    const error = streams.find((s) => s.error);
+    const label = cap && cap.state === 'paused' ? 'Paused' : info.pending_seconds > 30 && info.state !== 'error' ? `Catching up · ${Math.round(info.pending_seconds)}s remaining` : titles[info.state] || 'Listening';
+    return `<div class="live-status" role="status"><span>${ico('text', 13)} ${esc(label)}</span>${active.length ? `<span class="speaking-now">${ico('users', 13)} ${esc(active.join(' + '))} speaking</span>` : ''}${streams.some((s) => s.state === 'connecting') ? '<span class="hint">Connecting speaker labels…</span>' : ''}${error ? `<span class="hint amber">${esc(error.error)}</span>` : ''}</div>`;
+  }
   function renderBanners() {
     const d = state.detail, m = d.meeting, out = [];
     const tj = runningJob('transcribe'), sj = runningJob('summary'), dj = runningJob('draft');
     if (m.state === 'interrupted' && m.audio_state === 'kept' && !tj) out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>This recording was interrupted.</b><p>${esc((d.events.filter((e) => e.kind === 'interrupted').pop() || {}).detail || 'Ownkey stopped capturing.')} ${fmt(m.elapsed)} of audio and your notes are saved. Nothing resumed on its own.</p></div><div class="acts"><button class="btn primary xs" data-transcribe>${ico('play', 12)}Transcribe now</button></div></div>`);
     const engine = (state.status || {}).transcriber || {};
-    if (tj) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">${engine.kind === 'cloud' ? `Transcribing with ${esc(engine.label)}${engine.remote ? ' (remote)' : ''}` : 'Transcribing on this PC'}</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
+    if (tj && !d.live) out.push(`<div class="banner neutral">${ico('cpu', 16)}<div class="body"><b><span class="shimmer">${engine.kind === 'cloud' ? `Transcribing with ${esc(engine.label)}${engine.remote ? ' (remote)' : ''}` : 'Transcribing on this PC'}</span></b><p>${esc(tj.detail || 'Loading Orukeet')} · passages appear as each window finishes.</p><div class="progress"><i style="width:${Math.round((tj.progress || 0) * 100)}%"></i></div></div></div>`);
     const failed = ['transcribe', 'speakers', 'summary', 'draft'].map(lastJob).filter((j) => j && j.state === 'error'
       && (j.kind === 'transcribe' || (j.kind === 'speakers' && state.tab === 'transcript') || ((j.kind === 'summary' || j.kind === 'draft') && state.tab === 'summary')));
     const names = { transcribe: 'Transcription', speakers: 'Speaker labelling', summary: 'Summary', draft: 'Draft' };
@@ -349,20 +378,30 @@
     const events = q ? [] : d.events.filter((e) => e.kind === 'gap' || e.kind === 'pause');
     const sysLine = (e) => `<div class="sys ${e.kind === 'gap' ? 'warn' : ''}">${ico(e.kind === 'gap' ? 'alert' : 'info', 12)}${fmt(e.at)} · ${esc(e.kind === 'gap' ? e.detail : 'paused here')}<span class="line"></span></div>`;
     const rows = [];
-    let shown = 0, eventIndex = 0;
+    let shown = 0, eventIndex = 0, previous = null;
     for (const p of d.passages) {
-      while (eventIndex < events.length && events[eventIndex].at <= p.start) rows.push(sysLine(events[eventIndex++]));
+      while (eventIndex < events.length && events[eventIndex].at <= p.start) { rows.push(sysLine(events[eventIndex++])); previous = null; }
       const text = p.corrected || p.text;
       if (q && !text.toLowerCase().includes(q)) continue;
       shown++;
       const s = d.speakers.find((x) => x.id === p.speaker_id) || { source: p.source, name: p.speaker_id, confirmed: 1 };
       const editing = state.editing === p.id;
       const original = state.showOriginal.has(p.id);
+      const inline = `<span data-text="${p.id}" data-passage="${p.id}" title="${fmt(p.start)} · Click to correct">${highlight(original ? p.text : text, q)}</span>`;
+      const continues = previous && !q && !editing && !state.editing && !p.corrected && !previous.corrected
+        && p.speaker_id === previous.speaker_id && p.source === previous.source && p.start - previous.end < 2
+        && !/[.!?…]["'”’)]*$/.test(previous.text.trim());
+      if (continues) {
+        rows[rows.length - 1] = rows[rows.length - 1].replace('<!--continue-->', ` ${inline}<!--continue-->`);
+        previous = p;
+        continue;
+      }
       const body = editing ? `<textarea class="edit" data-edit="${p.id}">${esc(text)}</textarea><div class="edit-acts"><button class="btn primary xs" data-save-edit="${p.id}">Save</button><button class="btn quiet xs" data-cancel-edit>Cancel</button>${p.corrected ? `<button class="btn quiet xs" data-revert="${p.id}">Back to recognition</button>` : ''}</div>`
-        : `<div class="text" data-text="${p.id}" title="Click to correct">${highlight(original ? p.text : text, q)}</div>`;
+        : `<div class="text">${inline}<!--continue--></div>`;
       rows.push(`<div class="passage" data-passage="${p.id}"><button class="ts" data-seek="${p.start}" title="Play from ${fmt(p.start)}">${fmt(p.start)}</button><div>
         <div class="who"><button class="speaker ${s.source} ${s.confirmed ? '' : 'unconfirmed'}" data-assign="${p.id}" title="Change who said this"><span class="mg">${esc(s.name.slice(0, 1).toUpperCase())}</span>${esc(s.name)}</button>
         ${p.corrected ? `<span class="rev">${ico('edit', 11)} edited · <button data-toggle-original="${p.id}">${original ? 'show correction' : 'show original'}</button></span>` : ''}${p.quality === 'window' ? '<span class="rev" title="No token timing for this passage">≈ time</span>' : ''}</div>${body}</div></div>`);
+      previous = p;
     }
     while (eventIndex < events.length) rows.push(sysLine(events[eventIndex++]));
     const empty = d.passages.length ? (shown ? '' : `<p class="hint">No passage matches “${esc(state.query)}”.</p>`) : (runningJob('transcribe') ? '' : '<p class="hint">Nothing to show yet.</p>');
@@ -452,7 +491,7 @@
     const search = $('[data-search]');
     if (search) { search.oninput = () => { state.query = search.value; const at = search.selectionStart; render(); const again = $('[data-search]'); again.focus(); again.setSelectionRange(at, at); }; }
     on('[data-seek]', (e) => seek(Number(e.currentTarget.dataset.seek)));
-    on('[data-text]', (e) => { if (live() || runningJob('transcribe')) return; state.editing = e.currentTarget.dataset.text; render(); const ta = $('[data-edit]'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } });
+    on('[data-text]', (e) => { if ((live() || runningJob('transcribe')) && !state.detail.live) return; state.editing = e.currentTarget.dataset.text; render(); const ta = $('[data-edit]'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } });
     on('[data-cancel-edit]', () => { state.editing = null; render(); });
     on('[data-save-edit]', (e) => { const pid = e.currentTarget.dataset.saveEdit; put(`/api/meetings/${id}/passages/${pid}`, { corrected: $('[data-edit]').value }).then(() => { state.editing = null; return refreshDetail(); }).then(render).catch((er) => toast(er.message)); });
     on('[data-revert]', (e) => put(`/api/meetings/${id}/passages/${e.currentTarget.dataset.revert}`, { corrected: null }).then(() => { state.editing = null; return refreshDetail(); }).then(render).catch((er) => toast(er.message)));
@@ -534,19 +573,47 @@
   async function tick() {
     await Promise.all([refreshStatus(), refreshList()]);
     if (state.view === 'meeting' && state.meetingId) {
-      const editingNotes = document.activeElement === $('[data-notes]');
+      const editingField = document.activeElement?.matches('input, textarea, select');
       const before = state.detail;
       await refreshDetail();
       if (!state.detail) { render(); return; }
-      const changed = JSON.stringify({ c: state.detail.capture, j: state.detail.jobs, p: state.detail.passages.length, s: state.detail.summary && state.detail.summary.id, r: state.detail.meeting.transcript_rev, st: state.detail.meeting.state, a: state.detail.audio_state })
-        !== JSON.stringify({ c: before && before.capture, j: before && before.jobs, p: before && before.passages.length, s: before && before.summary && before.summary.id, r: before && before.meeting.transcript_rev, st: before && before.meeting.state, a: before && before.audio_state });
-      if (changed && !editingNotes && !state.editing) { const wasLive = before && before.capture; render(); if (wasLive && !live()) loadAudio(); }
-      else if (changed && editingNotes) { const rec = $('.rec-bar'); if (rec && live()) { rec.outerHTML = renderRecBar(live()); bindMeeting(); } }
+      const captureKey = (c) => c ? [c.state, c.gaps] : null;
+      const changed = state.pendingRender || JSON.stringify({ c: captureKey(state.detail.capture), j: state.detail.jobs, p: state.detail.passages.length, s: state.detail.summary && state.detail.summary.id, r: state.detail.meeting.transcript_rev, st: state.detail.meeting.state, a: state.detail.meeting.audio_state })
+        !== JSON.stringify({ c: captureKey(before && before.capture), j: before && before.jobs, p: before && before.passages.length, s: before && before.summary && before.summary.id, r: before && before.meeting.transcript_rev, st: before && before.meeting.state, a: before && before.meeting.audio_state });
+      if (changed && !editingField && !state.editing) {
+        const wasLive = before && before.capture;
+        const scroll = $('#doc'), top = scroll?.scrollTop || 0;
+        const follow = state.tab === 'transcript' && scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
+        render(); state.pendingRender = false;
+        const next = $('#doc'); if (next) next.scrollTop = follow ? next.scrollHeight : top;
+        if (wasLive && !live()) loadAudio();
+      }
+      else if (changed && (editingField || state.editing)) { state.pendingRender = true; }
       else if (live()) { const t = $('.rec-time'); if (t) t.textContent = fmt(live().elapsed); $$('.rec-bar .src').forEach((el, i) => { const key = Object.keys(live().levels)[i]; if (key) el.querySelector('.meter').outerHTML = meter(live().state === 'paused' ? 0 : live().levels[key], 8); }); }
       else if (changed) { renderSidebar(); }
     } else renderSidebar();
-    const busy = (state.status && state.status.capturing) || (state.status && state.status.running_job);
+    const busy = (state.status && state.status.capturing) || (state.status && state.status.running_job) || runningJob();
     clearTimeout(state.pollTimer); state.pollTimer = setTimeout(tick, busy ? 1000 : 4000);
+  }
+
+  async function pollLive() {
+    const id = state.meetingId;
+    if (id && state.view === 'meeting' && document.visibilityState === 'visible' && (live() || runningJob('transcribe'))) {
+      try {
+        const update = await get(`/api/meetings/${id}/live`);
+        if (id === state.meetingId && state.view === 'meeting') {
+          const bar = $('.live-status');
+          const html = renderLiveStatus(update.live, update.capture);
+          if (bar && html !== state.liveStatusHTML) { bar.outerHTML = html; state.liveStatusHTML = html; }
+          const cap = update.capture;
+          if (cap) {
+            const timer = $('.rec-time'); if (timer) timer.textContent = fmt(cap.elapsed);
+            $$('.rec-bar .src').forEach((el, i) => { const key = Object.keys(cap.levels)[i]; const m = el.querySelector('.meter'); if (m && key) m.outerHTML = meter(cap.state === 'paused' ? 0 : cap.levels[key], 8); });
+          }
+        }
+      } catch (_) { /* normal polling reports connection errors */ }
+    }
+    setTimeout(pollLive, 300);
   }
 
   // ── boot ─────────────────────────────────────────────────────
@@ -560,5 +627,6 @@
     else if (state.meetings.length) await openMeeting(state.meetings[0].id, START_TAB || undefined);
     else { state.view = 'empty'; render(); }
     tick();
+    pollLive();
   })();
 })();

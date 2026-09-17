@@ -157,6 +157,8 @@ DEFAULT_CONFIG = {
     "meetings_remote_policy": "ask",
     "meetings_upload_policy": "ask",
     "meetings_transcription_policy": "ask",
+    "meetings_live_transcription_policy": "ask",
+    "meetings_live_speakers_policy": "ask",
     "meetings_auto_summary": False,
     "meetings_auto_speakers": False,
     "meetings_retention": "days7",
@@ -521,6 +523,8 @@ def load_config() -> dict:
     cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
     cfg["meetings_upload_policy"] = "allow" if cfg.get("meetings_upload_policy") == "allow" else "ask"
     cfg["meetings_transcription_policy"] = "allow" if cfg.get("meetings_transcription_policy") == "allow" else "ask"
+    for key in ('meetings_live_transcription_policy', 'meetings_live_speakers_policy'):
+        cfg[key] = 'allow' if cfg.get(key) == 'allow' else 'ask'
     choice = str(cfg.get("meetings_audio_provider") or "same").strip().lower()
     if choice != "same":
         choice = normalize_provider(choice, "same")

@@ -221,24 +221,11 @@ Filler words, and Rewriting.
 
 ### Meetings
 
-Right-click the tray icon → **Meetings** → **New meeting**. The Ownkey
-Meetings window opens (its own window, not a browser tab). Ownkey records
-your microphone and, if you choose, the system audio of a call, keeps both
-tracks on your PC, and transcribes them after Stop with the same provider
-choices as dictation: the local Orukeet model (audio never leaves the PC, with
-word timing) or a cloud provider with your own key (asks before the first
-upload; Settings › Meetings). The meeting window has three
-tabs: **My thoughts** (your notes, never touched by AI), **Transcript** (timed
-passages you can correct, search and play back) and **Summary** (decisions,
-action items and open questions with citations, plus questions and a follow-up
-draft). Summaries and answers use the rewrite provider from Settings and ask
-before the first remote request; audio never leaves the PC for that. Speaker
-labels are optional: with a pyannoteAI key (Settings › Meetings) the tracks
-you choose (call audio, the microphone when several people share it, or
-both) are uploaded to pyannoteAI after you agree, and passages come back as
-Speaker 1, Speaker 2, … for you to name. Export as Markdown or JSON at any
-time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
-for what is built and verified.
+Right-click the tray icon → **Meetings** → **New meeting**. The Ownkey Meetings window records your microphone and optional call audio as separate tracks. **Transcribe while recording** is enabled by default: short phrases appear after pauses, and Stop finishes the remaining audio. Choose local Orukeet or your configured cloud provider in Settings › Meetings. Cloud transcription asks before uploading during a recording.
+
+The three tabs are **My thoughts** (your notes), **Transcript** (editable passages, search and playback) and **Summary** (decisions, actions, questions and follow-up drafts with citations). Summary and question requests use the rewrite provider and ask before sending text remotely. Export Markdown or JSON at any time.
+
+Optional **live speaker changes** use a pyannoteAI key and separate upload permission. Call audio and shared microphones can show Speaker 1, Speaker 2, … while recording, and speaker changes help choose transcription boundaries. You can name speakers and correct completed text while recording continues. Pause sends only generated silence to open speaker connections to preserve their identities; that paused time still counts as streaming usage. Batch speaker labels remain available after Stop. See [the implementation and validation notes](docs/MEETINGS_LIVE_PLAN.md) for the behavior and its limits.
 
 <p align="center">
   <img src="assets/readme/meetings-transcript.png" alt="The Ownkey Meetings window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">

@@ -204,13 +204,14 @@ class CaptureSession:
     """Owns the sources, the writer thread and the meeting's audio timeline."""
 
     def __init__(self, store, meeting_id: str, sources: list[BaseSource], *, clock=time.monotonic,
-                 chunk_samples: int = audio.CHUNK_SAMPLES, on_interrupted=None):
+                 chunk_samples: int = audio.CHUNK_SAMPLES, on_interrupted=None, on_audio=None):
         self.store = store
         self.meeting_id = meeting_id
         self.sources = {source.label: source for source in sources}
         self._clock = clock
         self._chunk_samples = chunk_samples
         self._on_interrupted = on_interrupted
+        self.on_audio = on_audio
         self._lock = threading.RLock()
         self._writers: dict[str, audio.ChunkWriter] = {}
         self._thread: threading.Thread | None = None
@@ -263,6 +264,8 @@ class CaptureSession:
             if self.state != "recording":
                 return False
             self._tick(final=False)
+            for writer in self._writers.values():
+                writer.flush()
             self._active_before = self.elapsed
             self._run_started = None
             self.state = "paused"
@@ -325,6 +328,32 @@ class CaptureSession:
                 "sources": {label: writer.total_samples for label, writer in self._writers.items()},
             }
 
+    def flush_audio(self) -> None:
+        """Make a selected recognition window durable before committing its text."""
+        with self._lock:
+            for writer in self._writers.values():
+                writer.flush()
+
+    def read_audio(self, source: str, start: int, count: int) -> np.ndarray:
+        # Snapshot the tail first. Files made durable afterwards are bounded by
+        # the snapshot's committed offset, so samples cannot appear twice.
+        with self._lock:
+            writer = self._writers[source]
+            end = min(writer.total_samples, start + count)
+            committed = writer.committed_samples
+            tail = writer.pending_samples() if end > committed else np.zeros(0, dtype=np.int16)
+        data = self.store.read_audio(self.meeting_id, source, start, min(end, committed))
+        if end > committed:
+            data = np.concatenate((data, tail[max(0, start - committed):end - committed]))
+        return data
+
+    def _append(self, label: str, data: np.ndarray) -> None:
+        writer = self._writers[label]
+        start = writer.total_samples
+        writer.append(data)
+        if self.on_audio is not None and data.size:
+            self.on_audio(label, start, data)  # bounded queue only; never network or inference
+
     # ── writer ─────────────────────────────────────────────────────
     def _writer_loop(self) -> None:
         while not self._stop.wait(WRITER_INTERVAL):
@@ -361,26 +390,29 @@ class CaptureSession:
         expected = int(elapsed * audio.SAMPLE_RATE)
         for label, source in self.sources.items():
             blocks = self._drain(source)
-            if paused and not final:
+            if paused:
+                source.dropped_samples = 0
+                if final:
+                    self._writers[label].flush()
                 continue
             writer = self._writers[label]
             if blocks:
                 data = np.concatenate(blocks) if len(blocks) > 1 else blocks[0]
                 self.levels[label] = max(audio.meter_level(data), self.levels[label] * LEVEL_HOLD)
-                writer.append(data)
+                self._append(label, data)
             else:
                 self.levels[label] *= LEVEL_HOLD
             if source.dropped_samples:
                 lost = source.dropped_samples
                 source.dropped_samples = 0
                 self.gaps += 1
-                writer.append(np.zeros(lost, dtype=np.int16))
+                self._append(label, np.zeros(lost, dtype=np.int16))
                 self.store.add_event(self.meeting_id, writer.total_samples / audio.SAMPLE_RATE, "gap",
                                      f"{SOURCE_LABELS.get(label, label)}: {lost / audio.SAMPLE_RATE:.1f} s lost (overrun)")
             deficit = expected - writer.total_samples
             if deficit > PAD_THRESHOLD_SECONDS * audio.SAMPLE_RATE or (final and deficit > 0):
                 # A silent loopback delivers no frames; keep the track aligned.
-                writer.append(np.zeros(int(deficit), dtype=np.int16))
+                self._append(label, np.zeros(int(deficit), dtype=np.int16))
             if final:
                 writer.flush()
         if not paused and elapsed - self._elapsed_written >= 1.0:

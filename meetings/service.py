@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from . import analysis, audio, capture, diarization, export
 from .capture import CaptureSession, MIC, SYSTEM, SOURCE_LABELS
 from .preview import MicPreview
+from .live import LiveTranscription
 from .store import MeetingStore, RETENTION_CHOICES
 from .transcription import merge_tracks, transcribe_track
 
@@ -33,9 +34,13 @@ DEFAULT_MEETING_CONFIG = {
     "meetings_audio_api_key": "",
     "meetings_audio_endpoint": "",
     "meetings_audio_model": "",
+    "meetings_live_transcription_policy": "ask",
+    "meetings_live_speakers_policy": "ask",
 }
 POLICY_KEYS = {"remote": "meetings_remote_policy", "upload": "meetings_upload_policy",
-               "transcription": "meetings_transcription_policy"}
+               "transcription": "meetings_transcription_policy",
+               "live_transcription": "meetings_live_transcription_policy",
+               "live_speakers": "meetings_live_speakers_policy"}
 CLOUD_WINDOW_NOTE = "windows of up to 28 seconds"
 
 
@@ -55,7 +60,8 @@ class MeetingService:
     def __init__(self, store: MeetingStore, *, get_config, set_config=None, local_models=None,
                  local_transcriber=None, chat=None, get_rewrite_key=None, get_audio_key=None, notify=None,
                  open_settings=None, source_factory=None, on_capture_change=None, diarizer_factory=None,
-                 cloud_transcriber=None, dictation_busy=None, yield_to=None, clock=time.monotonic):
+                 cloud_transcriber=None, dictation_busy=None, yield_to=None, clock=time.monotonic,
+                 stream_factory=None):
         self.store = store
         self._on_capture_change = on_capture_change or (lambda: None)
         # Dictation comes first: a meeting cannot start over a held hotkey, and
@@ -79,6 +85,8 @@ class MeetingService:
         self._lock = threading.RLock()
         self._session: CaptureSession | None = None
         self._session_meeting: str | None = None
+        self._live: dict[str, LiveTranscription] = {}
+        self._stream_factory = stream_factory
         self._cancelled: set[str] = set()
         self._running_job: dict | None = None
         self._audio_cache: dict[tuple, bytes] = {}
@@ -250,6 +258,8 @@ class MeetingService:
             "remote_policy": self.remote_policy(),
             "upload_policy": self.upload_policy(),
             "transcription_policy": self.transcription_policy(),
+            "live_transcription_policy": cfg['meetings_live_transcription_policy'],
+            "live_speakers_policy": cfg['meetings_live_speakers_policy'],
             "auto_summary": bool(cfg.get("meetings_auto_summary")),
             "auto_speakers": bool(cfg.get("meetings_auto_speakers")),
             "default_retention": cfg.get("meetings_retention") if cfg.get("meetings_retention") in RETENTION_CHOICES else "days7",
@@ -258,6 +268,9 @@ class MeetingService:
         }
 
     def _library_bytes(self) -> int:
+        measured, cached = getattr(self, '_size_cache', (0, 0))
+        if time.monotonic() - measured < 5:
+            return cached
         total = 0
         try:
             for root, _dirs, files in os.walk(self.store.root):
@@ -268,6 +281,7 @@ class MeetingService:
                         pass
         except OSError:
             pass
+        self._size_cache = (time.monotonic(), total)
         return total
 
     # ── capture ────────────────────────────────────────────────────
@@ -299,9 +313,41 @@ class MeetingService:
         self._mic_preview.stop()
 
     def start_meeting(self, title: str = "", *, mic: bool = True, system: bool = True, mic_device=None,
-                      system_device=None, retention: str | None = None, mic_shared: bool = False) -> dict:
+                      system_device=None, retention: str | None = None, mic_shared: bool = False,
+                      live_transcription: bool = False, live_speakers: bool = False,
+                      live_transcription_ok: bool = False, live_speakers_ok: bool = False) -> dict:
         if not mic and not system:
             raise MeetingError("Choose at least one source.")
+        cfg = self.config()
+        engine = self.transcription_engine(cfg)
+        if live_speakers and not live_transcription:
+            raise MeetingError('Enable live transcription to use live speaker labels.')
+        if live_transcription and engine['kind'] == 'cloud':
+            if not engine['configured']:
+                raise MeetingError('Set up the meeting transcription provider in Settings first.')
+            if engine['remote'] and not live_transcription_ok and cfg['meetings_live_transcription_policy'] != 'allow':
+                disclosure = self.transcription_disclosure(engine)
+                disclosure.update(policy_key='live_transcription',
+                    intro='Audio is sent in short speech windows while this meeting is recording. '
+                          'Pause stops sending new audio. Choose Orukeet to transcribe on this PC.')
+                raise ConsentRequired(disclosure)
+        if live_speakers:
+            if not self.pyannote_key(cfg):
+                raise MeetingError('Add a pyannoteAI key in Settings > Meetings first.')
+            if not system and not (mic and mic_shared):
+                raise MeetingError('Live speaker labels need call audio or a shared microphone.')
+            if not live_speakers_ok and cfg['meetings_live_speakers_policy'] != 'allow':
+                raise ConsentRequired({
+                    'kind': 'upload', 'policy_key': 'live_speakers', 'provider': 'pyannoteAI',
+                    'model': 'Live-1', 'host': 'api.pyannote.ai',
+                    'title': 'Show speaker changes while recording',
+                    'intro': 'Selected audio streams to pyannoteAI during the meeting. During Pause, only '
+                             'generated silence is sent to preserve speaker labels; paused time still counts as usage.',
+                    'sent': ([SOURCE_LABELS[SYSTEM]] if system else []) +
+                            ([SOURCE_LABELS[MIC]] if mic and mic_shared else []),
+                    'not_sent': ['My thoughts', 'Transcript text', 'Audio heard during Pause'],
+                    'retention': 'pyannoteAI processes live audio without storing the audio or stream outputs.',
+                })
         self._mic_preview.stop()  # hand the microphone over to the recording
         with self._lock:
             if self.is_capturing():
@@ -317,7 +363,7 @@ class MeetingService:
             if MIC in described:
                 # Several people around one microphone: label that track too.
                 described[MIC]["shared"] = bool(mic_shared)
-            meeting = self.store.create_meeting(title, described, retention, engine="orukeet")
+            meeting = self.store.create_meeting(title, described, retention, engine=engine['provider'])
             for source in sources:
                 self.store.ensure_speaker(meeting["id"], source.label, source.label, SOURCE_LABELS[source.label])
             session = CaptureSession(self.store, meeting["id"], sources, on_interrupted=self._interrupted)
@@ -328,6 +374,12 @@ class MeetingService:
                 shutil.rmtree(self.store.meeting_dir(meeting["id"]), ignore_errors=True)
                 raise MeetingError(str(exc)) from exc
             self._session, self._session_meeting = session, meeting["id"]
+            if live_transcription:
+                self.store.set_live_options(meeting['id'], {'speakers': bool(live_speakers),
+                    'provider': engine['provider'], 'model': engine['model']})
+                self._start_live(meeting['id'], cfg, engine, session=session,
+                                 speaker_sources=([SYSTEM] if system and live_speakers else []) +
+                                 ([MIC] if mic and mic_shared and live_speakers else []))
         self._capture_changed()
         return self.store.get_meeting(meeting["id"])
 
@@ -355,6 +407,9 @@ class MeetingService:
         self._audio_cache.clear()
         self._capture_changed()
         if summary["state"] == "stopped":
+            if meeting_id in self._live:
+                self._live[meeting_id].finish()
+                return summary
             try:
                 self.transcribe(meeting_id)
             except ConsentRequired:
@@ -364,6 +419,9 @@ class MeetingService:
         return summary
 
     def _interrupted(self, session: CaptureSession, reason: str) -> None:
+        live = self._live.get(session.meeting_id)
+        if live:
+            live.finish()
         with self._lock:
             if self._session is session:
                 self._session, self._session_meeting = None, None
@@ -384,6 +442,7 @@ class MeetingService:
             jobs.setdefault(job["meeting_id"], job)
         for meeting in items:
             meeting["job"] = jobs.get(meeting["id"])
+            meeting['incremental'] = self.store.live_options(meeting['id']) is not None
             meeting["passages"] = len(self.store.list_passages(meeting["id"]))
             summary = self.store.latest_analysis(meeting["id"], "summary")
             meeting["summary_state"] = (
@@ -405,6 +464,7 @@ class MeetingService:
         return {
             "meeting": meeting,
             "capture": capture_state,
+            "live": self._live[meeting_id].status() if meeting_id in self._live else None,
             "notes": self.store.get_notes(meeting_id),
             "speakers": self.store.list_speakers(meeting_id),
             "passages": self.store.list_passages(meeting_id),
@@ -414,6 +474,14 @@ class MeetingService:
             "answers": self.store.list_analyses(meeting_id, "answer"),
             "drafts": self.store.list_analyses(meeting_id, "draft"),
         }
+
+    def live_status(self, meeting_id: str) -> dict:
+        live = self._live.get(meeting_id)
+        state = live.status() if live else None
+        if state:
+            speakers = {s['id']: s['name'] for s in self.store.list_speakers(meeting_id)}
+            state['active_names'] = [speakers.get(s, 'Speaker') for s in state['active_speakers']]
+        return {'live': state, 'capture': self.capture_state() if self._session_meeting == meeting_id else None}
 
     def rename(self, meeting_id: str, title: str) -> dict:
         self.store.update_meeting(meeting_id, title=" ".join(str(title).split()))
@@ -461,11 +529,16 @@ class MeetingService:
         return row
 
     def _require_editable(self, meeting_id: str) -> None:
+        if meeting_id in self._live:
+            return  # incremental commits never overwrite a completed passage
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] == "transcribe":
                 raise MeetingError("Wait for transcription to finish before editing passages.")
 
     def delete_meeting(self, meeting_id: str) -> None:
+        live = self._live.get(meeting_id)
+        if live:
+            live.cancel()
         with self._lock:
             self._cancelled.add(meeting_id)
             if self._session_meeting == meeting_id and self._session is not None:
@@ -476,6 +549,9 @@ class MeetingService:
             time.sleep(0.05)
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             self.store.update_job(job["id"], state="cancelled")
+        if live:
+            live.join()
+            self._live.pop(meeting_id, None)
         self.store.delete_meeting(meeting_id)
         self._audio_cache = {k: v for k, v in self._audio_cache.items() if k[0] != meeting_id}
         directory = self.store.meeting_dir(meeting_id)
@@ -507,8 +583,54 @@ class MeetingService:
             if engine["remote"] and not remote_ok and self.transcription_policy() != "allow":
                 raise ConsentRequired(self.transcription_disclosure(engine))
         job = self.store.create_job(meeting_id, "transcribe", "Waiting for the model")
+        if self.store.live_options(meeting_id) is not None:
+            self._start_live(meeting_id, self.config(), engine, job=job)
+            return job
         self._jobs.put(job["id"])
         return job
+
+    def _start_live(self, meeting_id, cfg, engine, *, session=None, speaker_sources=(), job=None):
+        from .streaming import LiveSpeakerStream
+
+        job = job or self.store.create_job(meeting_id, 'transcribe', 'Listening for a pause')
+        cfg = dict(cfg)
+        def decoder_factory():
+            if engine['kind'] == 'local':
+                if not self.local_models or not self.local_models.files_present() or not self.local_transcriber:
+                    raise MeetingError('Orukeet is not installed. Audio is saved; install it in Settings and retry.')
+                attempt = self.local_transcriber.begin_attempt()
+                def decode(wav):
+                    return attempt.transcribe_timed(wav, vocabulary=cfg.get('vocabulary', ()))
+                return decode, attempt.close
+            key = self._transcription_key(cfg)
+            def decode(wav):
+                try:
+                    return (self._cloud_transcriber(engine, key, wav, cfg.get('language', 'auto'),
+                                                    cfg.get('vocabulary', ())), [], [], [])
+                except Exception as exc:
+                    raise MeetingError(describe_error(exc)) from None
+            return decode, lambda: None
+
+        def complete():
+            if self._closed or meeting_id in self._cancelled:
+                return
+            meeting = self.store.get_meeting(meeting_id)
+            if not meeting:
+                return
+            self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine['provider'])
+            self.store.add_event(meeting_id, meeting['elapsed'], 'transcribed', 'Live transcription complete')
+            self.store.update_job(job['id'], state='done', progress=1.)
+            self._after_transcribe(meeting_id)
+
+        live = LiveTranscription(self.store, job, sources=self.store.get_meeting(meeting_id)['sources'],
+            decoder_factory=decoder_factory, capture=session, on_complete=complete,
+            speaker_key=self.pyannote_key(cfg), speaker_sources=speaker_sources,
+            stream_factory=self._stream_factory or LiveSpeakerStream, timed=engine['kind'] == 'local',
+            yield_to=lambda: self._yield_to() or self._closed)
+        self._live[meeting_id] = live
+        if session:
+            session.on_audio = live.feed
+        live.start()
 
     def summarize(self, meeting_id: str, *, include_notes: bool = False, remote_ok: bool = False) -> dict:
         self._check_analysis_allowed(remote_ok)
@@ -651,6 +773,7 @@ class MeetingService:
         targets = [t for t in targets if t in available] or self._speaker_targets(meeting_id, meeting)
         passages = self.store.list_passages(meeting_id)
         should_stop = lambda: meeting_id in self._cancelled or self._closed
+        incremental = bool(self.store.live_options(meeting_id))
         found = []
         for source in targets:
             label = SOURCE_LABELS.get(source, source)
@@ -662,7 +785,8 @@ class MeetingService:
             mine = [p for p in passages if p["source"] == source]
             others = [p for p in passages if p["source"] != source]
             labelled, speakers = diarization.assign_speakers(mine, segments, source=source, fallback_speaker=source,
-                                                             first_number=len(found) + 1)
+                                                             first_number=len(found) + 1,
+                                                             preserve_passages=incremental)
             for speaker in speakers:
                 existing = self.store.get_speaker(meeting_id, speaker["id"])
                 if existing is None:
@@ -675,11 +799,13 @@ class MeetingService:
         if should_stop():
             return
         self.store.order_speakers(meeting_id, [s["id"] for s in found])  # chips follow the numbering
-        merged = merge_tracks({"all": passages})
+        merged = sorted(passages, key=lambda p: p['start']) if incremental else merge_tracks({"all": passages})
         rev = self.store.get_meeting(meeting_id)["transcript_rev"] + 1
         self.store.replace_passages(meeting_id, merged, rev)
         self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
                              f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
+        if meeting['retention'] == 'after_transcription':
+            self.remove_audio(meeting_id, processing_complete=True)
 
     def _worker_loop(self) -> None:
         while not self._closed:
@@ -784,16 +910,21 @@ class MeetingService:
         finally:
             if attempt is not None:
                 attempt.close()
+        self._after_transcribe(meeting_id)
+
+    def _after_transcribe(self, meeting_id):
         self._audio_cache.clear()
         latest = self.store.get_meeting(meeting_id)
-        if latest and latest["retention"] == "after_transcription":
-            self.remove_audio(meeting_id)
         cfg = self.config()
-        if (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
+        auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
                 and self.upload_policy() == "allow" and latest and latest["audio_state"] == "kept"
-                and self._speaker_targets(meeting_id, latest)):
+                and self._speaker_targets(meeting_id, latest)
+                and not (self.store.live_options(meeting_id) or {}).get('speakers'))
+        if auto_speakers:
             self._jobs.put(self.store.create_job(
                 meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)}))["id"])
+        elif latest and latest['retention'] == 'after_transcription':
+            self.remove_audio(meeting_id)
         if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
             info = self.text_model_info(cfg)
             if not info["remote"] or self.remote_policy() == "allow":
@@ -871,12 +1002,15 @@ class MeetingService:
             self._audio_cache = {key: cached}
         return cached
 
-    def remove_audio(self, meeting_id: str) -> dict:
+    def remove_audio(self, meeting_id: str, *, processing_complete: bool = False) -> dict:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
         if meeting["state"] in ("recording", "paused"):
             raise MeetingError("Stop the meeting first.")
+        if not processing_complete and any(j['kind'] in ('transcribe', 'speakers')
+                for j in self.store.list_jobs(meeting_id, ('queued', 'running'))):
+            raise MeetingError('Wait for transcription and speaker labels to finish before removing audio.')
         self.store.delete_chunks(meeting_id)
         shutil.rmtree(self.store.meeting_dir(meeting_id) / "audio", ignore_errors=True)
         self.store.update_meeting(meeting_id, audio_state="removed")
@@ -915,6 +1049,8 @@ class MeetingService:
         A worker still busy with a job keeps the database open until the process ends."""
         self._closed = True
         self._mic_preview.stop()
+        for live in list(self._live.values()):
+            live.cancel()
         with self._lock:
             session = self._session
             if session is not None and stop_recording:
@@ -924,7 +1060,9 @@ class MeetingService:
                     pass
             self._session, self._session_meeting = None, None
         self._worker.join(timeout=2.0)
-        if not self._worker.is_alive():
+        for live in list(self._live.values()):
+            live.join()
+        if not self._worker.is_alive() and not any(l.alive for l in self._live.values()):
             try:
                 self.store.close()
             except Exception:

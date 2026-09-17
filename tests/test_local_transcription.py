@@ -70,6 +70,25 @@ class LifecycleTests(unittest.TestCase):
         self.now = 100000
         self.assertFalse(self.service.check_idle())
 
+    def test_long_dictation_uses_bounded_windows_and_returns_one_string(self):
+        import numpy as np
+        from meetings.audio import wav_bytes
+
+        lengths = []
+        class TimedRecognizer:
+            def create_stream(self):
+                return SimpleNamespace(accept_waveform=lambda rate, samples: lengths.append(len(samples)),
+                    result=SimpleNamespace(text=' synthetic words.', tokens=[' synthetic', ' words', '.'],
+                                           timestamps=[.7, 1., 1.3], durations=[.2, .2, .1]))
+            def decode_stream(self, stream):
+                pass
+        self.loader.return_value = TimedRecognizer()
+        result = self.attempt().transcribe(wav_bytes(np.full(16000 * 65, 3000, dtype=np.int16)))
+        self.assertGreater(len(lengths), 1)
+        self.assertLessEqual(max(lengths), 28 * 16000)
+        self.assertIsInstance(result, str)
+        self.assertEqual(result.count('synthetic'), len(lengths))
+
     def test_cancelled_recording_resets_timer_and_prevents_unload_while_held(self):
         attempt = self.attempt()
         attempt.ready.result(2)

@@ -10,3 +10,4 @@ evdev>=1.9.0; sys_platform == "linux"
 sherpa-onnx==1.13.8
 sherpa-onnx-core==1.13.8
 soundcard>=0.4.3; sys_platform == "win32"
+websockets==15.0.1

@@ -158,6 +158,10 @@ class ChunkWriter:
     def total_samples(self) -> int:
         return self.committed_samples + self._pending_count
 
+    def pending_samples(self) -> np.ndarray:
+        """Copy the unwritten tail while the caller holds the capture lock."""
+        return np.concatenate(self._pending) if self._pending else np.zeros(0, dtype=np.int16)
+
     def append(self, samples: np.ndarray) -> int:
         """Buffer samples; write every full chunk. Returns chunks written."""
         data = np.asarray(samples, dtype=np.int16)

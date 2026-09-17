@@ -161,7 +161,8 @@ def speaker_for(start: float, end: float, segments: list[dict], fallback: str | 
 
 
 def assign_speakers(passages: list[dict], segments: list[dict], *, source: str,
-                    fallback_speaker: str, first_number: int = 1) -> tuple[list[dict], list[dict]]:
+                    fallback_speaker: str, first_number: int = 1,
+                    preserve_passages: bool = False) -> tuple[list[dict], list[dict]]:
     """Label one source's passages, splitting at speaker changes.
 
     Returns ``(new_passages, speakers)`` where speakers are
@@ -181,6 +182,16 @@ def assign_speakers(passages: list[dict], segments: list[dict], *, source: str,
 
     output: list[dict] = []
     for passage in sorted(passages, key=lambda p: p["start"]):
+        if preserve_passages:
+            # A live passage may already have edits or citations. Only fill an
+            # unassigned, unambiguous label; never split or renumber its words.
+            labels_here = {s['speaker'] for s in segments
+                           if s['start'] < passage['end'] and s['end'] > passage['start']}
+            if passage['speaker_id'] == fallback_speaker and len(labels_here) == 1:
+                output.append(dict(passage, speaker_id=speaker_id(next(iter(labels_here))), speaker_labelled=True))
+            else:
+                output.append(passage)
+            continue
         tokens = passage.get("tokens") or []
         if not tokens:
             label = speaker_for(passage["start"], passage["end"], segments)
