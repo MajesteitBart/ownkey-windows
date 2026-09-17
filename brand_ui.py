@@ -7,13 +7,20 @@ window needs no extra runtime.
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import glob
+import io
 import math
 import os
 import sys
 import tkinter as tk
 from tkinter import font as tkfont, ttk
+
+try:
+    from PIL import Image, ImageDraw
+except Exception:  # Pillow ships with Ownkey; without it the kit draws plain canvas shapes
+    Image = ImageDraw = None
 
 KEY = "#0E0E0E"        # keycap black, window background
 GRAPHITE = "#171717"   # cards and panels
@@ -76,17 +83,78 @@ class Type:
         self.kbd = (mono, 9)
 
 
+def font_option(font) -> str:
+    """Font description for the Tk option database.
+
+    The family goes in braces. Unbraced, "Segoe UI 10" reads as family "Segoe"
+    with size "UI", and every widget that takes its font from the option
+    database fails to build.
+    """
+    family, *rest = font if isinstance(font, (tuple, list)) else (font,)
+    return " ".join(["{%s}" % family, *(str(part) for part in rest)])
+
+
+def _style_combobox(root: tk.Misc, style: ttk.Style, type_: Type) -> None:
+    """A dropdown that looks like one: a chevron instead of the boxed arrow of
+    the clam theme, a hover border, a hand cursor, and a list in brand colours."""
+    style.configure("TCombobox", fieldbackground=SLATE, background=SLATE, bordercolor=LINE,
+                    arrowcolor=BONE, arrowsize=14, lightcolor=SLATE, darkcolor=SLATE, foreground=BONE,
+                    selectbackground=SLATE, selectforeground=BONE, padding=(8, 5), font=type_.body)
+    style.map("TCombobox", fieldbackground=[("disabled", GRAPHITE), ("readonly", SLATE)],
+              foreground=[("disabled", ASH), ("readonly", BONE)],
+              bordercolor=[("disabled", LINE), ("focus", ORANGE), ("hover", ASH)],
+              arrowcolor=[("disabled", LINE)],
+              selectbackground=[("readonly", SLATE)], selectforeground=[("readonly", BONE)])
+    chevron = ((9, 6), (14, 11), (19, 6))
+    images = {name: smooth_image(root, 28, 17, background, strokes=[(chevron, color, 1.7)])
+              for name, color, background in (("normal", ASH, SLATE), ("active", BONE, SLATE),
+                                              ("disabled", HAIRLINE, GRAPHITE))}
+    if all(images.values()):
+        root._ownkey_chevrons = images  # the element only borrows the images
+        if "Ownkey.Combobox.chevron" not in style.element_names():
+            style.element_create("Ownkey.Combobox.chevron", "image", images["normal"],
+                                 ("disabled", images["disabled"]), ("pressed", images["active"]),
+                                 ("hover", images["active"]), ("focus", images["active"]), sticky="")
+        style.layout("TCombobox", [("Combobox.field", {"sticky": "nswe", "children": [
+            ("Ownkey.Combobox.chevron", {"side": "right", "sticky": "ns"}),
+            ("Combobox.padding", {"sticky": "nswe", "children": [("Combobox.textarea", {"sticky": "nswe"})]}),
+        ]})])
+
+    def cursor(event):
+        widget = event.widget
+        try:
+            widget.configure(cursor="arrow" if widget.instate(["disabled"]) else "hand2")
+        except (tk.TclError, AttributeError):
+            pass
+
+    root.bind_class("TCombobox", "<Enter>", cursor, add="+")
+    # The page scrolls under the pointer. A wheel turn must not also change the
+    # value of whatever field happens to be there.
+    for widget_class in ("TCombobox", "TSpinbox"):
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            root.unbind_class(widget_class, sequence)
+
+    for option, value in (("background", SLATE), ("foreground", BONE), ("selectBackground", ORANGE),
+                          ("selectForeground", KEY), ("font", font_option(type_.body)), ("borderWidth", 6),
+                          ("highlightThickness", 0), ("relief", "flat"), ("activeStyle", "none")):
+        root.option_add(f"*TCombobox*Listbox.{option}", value)
+    style.configure("ComboboxPopdownFrame", relief="solid", borderwidth=1, bordercolor=HAIRLINE,
+                    lightcolor=HAIRLINE, darkcolor=HAIRLINE, background=SLATE)
+    # The scrollbar inside the list uses the default style.
+    style.layout("Vertical.TScrollbar", [
+        ("Vertical.Scrollbar.trough", {"children": [
+            ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})], "sticky": "ns"})])
+    # In the clam theme arrowsize is the bar's thickness, also without arrows.
+    style.configure("Vertical.TScrollbar", troughcolor=SLATE, background=HAIRLINE, bordercolor=SLATE,
+                    lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowsize=8, gripcount=0, relief="flat")
+    style.map("Vertical.TScrollbar", background=[("active", ASH)])
+
+
 def style_ttk(root: tk.Misc, type_: Type) -> ttk.Style:
     """Theme the few ttk widgets that tk cannot draw itself."""
     style = ttk.Style(root)
     style.theme_use("clam")
-    style.configure("TCombobox", fieldbackground=SLATE, background=SLATE, bordercolor=LINE,
-                    arrowcolor=ASH, lightcolor=SLATE, darkcolor=SLATE, foreground=BONE,
-                    selectbackground=SLATE, selectforeground=BONE, padding=(8, 5), font=type_.body)
-    style.map("TCombobox", fieldbackground=[("readonly", SLATE), ("disabled", GRAPHITE)],
-              foreground=[("readonly", BONE), ("disabled", ASH)],
-              bordercolor=[("focus", ORANGE)], arrowcolor=[("disabled", LINE)],
-              selectbackground=[("readonly", SLATE)], selectforeground=[("readonly", BONE)])
+    _style_combobox(root, style, type_)
     style.configure("TSpinbox", fieldbackground=SLATE, background=SLATE, bordercolor=LINE,
                     arrowcolor=ASH, lightcolor=SLATE, darkcolor=SLATE, foreground=BONE,
                     selectbackground=ORANGE, selectforeground=KEY, padding=(8, 4), arrowsize=12)
@@ -96,14 +164,10 @@ def style_ttk(root: tk.Misc, type_: Type) -> ttk.Style:
     style.layout("Ownkey.Vertical.TScrollbar", [
         ("Vertical.Scrollbar.trough", {"children": [
             ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})], "sticky": "ns"})])
-    style.configure("Ownkey.Vertical.TScrollbar", troughcolor=KEY, background=LINE, bordercolor=KEY,
-                    lightcolor=LINE, darkcolor=LINE, arrowsize=0, width=6, relief="flat")
-    style.map("Ownkey.Vertical.TScrollbar", background=[("active", HAIRLINE)])
-    root.option_add("*TCombobox*Listbox.background", SLATE)
-    root.option_add("*TCombobox*Listbox.foreground", BONE)
-    root.option_add("*TCombobox*Listbox.selectBackground", ORANGE)
-    root.option_add("*TCombobox*Listbox.selectForeground", KEY)
-    root.option_add("*TCombobox*Listbox.font", " ".join(str(part) for part in type_.body))
+    # arrowsize is the thickness here too; 0 left a bar of one invisible pixel.
+    style.configure("Ownkey.Vertical.TScrollbar", troughcolor=KEY, background=HAIRLINE, bordercolor=KEY,
+                    lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowsize=6, gripcount=0, relief="flat")
+    style.map("Ownkey.Vertical.TScrollbar", background=[("active", ASH)])
     return style
 
 
@@ -124,6 +188,50 @@ def round_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
     return canvas.create_polygon(rounded_points(x1, y1, x2, y2, radius), **kwargs)
 
 
+SUPERSAMPLE = 8
+
+
+def _rgb(widget: tk.Misc, color: str) -> tuple:
+    return tuple(channel // 257 for channel in widget.winfo_rgb(color))
+
+
+def smooth_image(master, width, height, background, shapes=(), strokes=()):
+    """Antialiased shapes on a solid background as a PhotoImage; None without Pillow.
+
+    The Tk canvas draws polygons and ovals without antialiasing, which shows as
+    stair-steps on a bone pill against the black window. Here the shapes are
+    drawn SUPERSAMPLE times larger and reduced with an exact box filter, so
+    straight edges stay sharp and only the curves blend.
+
+    shapes:  (x1, y1, x2, y2, radius, fill, outline) rounded rectangles in canvas
+             coordinates. Empty fill or outline means none; the outline is 1 px.
+    strokes: (points, color, width) open polylines with round ends.
+    """
+    if Image is None:
+        return None
+    scale = SUPERSAMPLE
+    width, height = max(1, int(round(width))), max(1, int(round(height)))
+    image = Image.new("RGB", (width * scale, height * scale), _rgb(master, background))
+    draw = ImageDraw.Draw(image)
+    for x1, y1, x2, y2, radius, fill, outline in shapes:
+        box = (round(x1 * scale), round(y1 * scale), round(x2 * scale) - 1, round(y2 * scale) - 1)
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        radius = max(0, min(radius * scale, (box[2] - box[0]) / 2, (box[3] - box[1]) / 2))
+        draw.rounded_rectangle(box, radius=radius, fill=_rgb(master, fill) if fill else None,
+                               outline=_rgb(master, outline) if outline else None,
+                               width=scale if outline else 0)
+    for points, color, line_width in strokes:
+        scaled = [(x * scale, y * scale) for x, y in points]
+        ink, half = _rgb(master, color), line_width * scale / 2
+        draw.line(scaled, fill=ink, width=max(1, round(line_width * scale)), joint="curve")
+        for x, y in (scaled[0], scaled[-1]):
+            draw.ellipse((x - half, y - half, x + half, y + half), fill=ink)
+    buffer = io.BytesIO()
+    image.reduce(scale).save(buffer, "PNG")
+    return tk.PhotoImage(master=master, data=base64.b64encode(buffer.getvalue()))
+
+
 class Card(tk.Canvas):
     """Graphite panel with a 1px line border and rounded corners.
 
@@ -138,8 +246,24 @@ class Card(tk.Canvas):
         self.inner = tk.Frame(self, bg=fill)
         self._window = self.create_window(padding[0], padding[1], window=self.inner, anchor="nw")
         self._shape = None
+        self._corners = None
         self.inner.bind("<Configure>", self._layout)
         self.bind("<Configure>", self._layout)
+
+    def _corner_images(self):
+        """Four antialiased corner tiles. The card is too large to redraw as one
+        image on every resize, so the polygon keeps the body and the tiles cover
+        its stair-stepped corners."""
+        if self._corners is None:
+            tile = int(math.ceil(self.radius)) + 2
+            far = 4 * tile  # the far sides fall outside the tile: only one corner shows
+            self._corners = tuple(
+                smooth_image(self, tile, tile, self.cget("bg"),
+                             [(1 if west else tile - far, 1 if north else tile - far,
+                               far if west else tile - 1, far if north else tile - 1,
+                               self.radius, self.fill, self.border)])
+                for north, west in ((True, True), (True, False), (False, True), (False, False)))
+        return self._corners
 
     def _layout(self, _event=None):
         width = self.winfo_width()
@@ -147,11 +271,15 @@ class Card(tk.Canvas):
         if int(self.cget("height")) != height:
             self.configure(height=height)
         self.itemconfigure(self._window, width=max(1, width - 2 * self.padding[0]))
-        if self._shape is not None:
-            self.delete(self._shape)
-        self._shape = round_rect(self, 1, 1, width - 1, height - 1, self.radius,
-                                 fill=self.fill, outline=self.border, width=1)
-        self.tag_lower(self._shape)
+        self.delete("shape")
+        self._shape = round_rect(self, 1, 1, width - 2, height - 2, self.radius,
+                                 fill=self.fill, outline=self.border, width=1, tags="shape")
+        corners = self._corner_images()
+        if all(corners) and width > 4 * self.radius and height > 2 * self.radius + 4:
+            for image, x, y, anchor in zip(corners, (0, width, 0, width), (0, 0, height, height),
+                                           ("nw", "ne", "sw", "se")):
+                self.create_image(x, y, image=image, anchor=anchor, tags="shape")
+        self.tag_lower("shape")
 
 
 class Toggle(tk.Canvas):
@@ -164,6 +292,7 @@ class Toggle(tk.Canvas):
                          highlightthickness=0, bd=0, cursor="hand2", **kwargs)
         self.variable, self.command = variable, command
         self._enabled = True
+        self._images = {}
         self._position = 1.0 if variable.get() else 0.0
         self._trace = variable.trace_add("write", lambda *_: self._animate())
         self.bind("<Button-1>", self._click)
@@ -213,9 +342,17 @@ class Toggle(tk.Canvas):
         knob = BONE
         if not self._enabled:
             track, knob = (LINE if not on else "#6B3A1E"), ASH
-        round_rect(self, 1, 1, w - 1, h - 1, (h - 2) / 2, fill=track, outline="")
         knob_size = h - 2 * pad
         x = pad + self._position * (w - 2 * pad - knob_size)
+        key = (round(x, 2), track, knob)
+        if key not in self._images:
+            self._images[key] = smooth_image(self, w, h, self.cget("bg"), [
+                (1, 1, w - 1, h - 1, (h - 2) / 2, track, ""),
+                (x, pad, x + knob_size, pad + knob_size, knob_size / 2, knob, "")])
+        if self._images[key] is not None:
+            self.create_image(0, 0, image=self._images[key], anchor="nw")
+            return
+        round_rect(self, 1, 1, w - 1, h - 1, (h - 2) / 2, fill=track, outline="")
         self.create_oval(x, pad, x + knob_size, pad + knob_size, fill=knob, outline="")
 
 
@@ -230,6 +367,7 @@ class Button(tk.Canvas):
         self._text = text
         self._state = "normal"
         self._hover = False
+        self._images = {}
         self.bind("<Enter>", lambda _e: self._set_hover(True))
         self.bind("<Leave>", lambda _e: self._set_hover(False))
         self.bind("<Button-1>", self._press)
@@ -294,8 +432,18 @@ class Button(tk.Canvas):
         else:
             fill = SLATE if hover else ""
             outline, text = (LINE if disabled else (ORANGE if hover else HAIRLINE)), (ASH if disabled else BONE)
-        round_rect(self, 1, 1, width - 1, height - 1, (height - 2) / 2,
-                   fill=fill or self.cget("bg"), outline=outline or self.cget("bg"), width=1)
+        if fill or outline:
+            key = (width, height, fill, outline)
+            if key not in self._images:
+                if len(self._images) > 8:  # a label that keeps changing must not pile up images
+                    self._images.clear()
+                self._images[key] = smooth_image(self, width, height, self.cget("bg"), [
+                    (1, 1, width - 1, height - 1, (height - 2) / 2, fill, "" if outline == fill else outline)])
+            if self._images[key] is not None:
+                self.create_image(0, 0, image=self._images[key], anchor="nw")
+            else:
+                round_rect(self, 1, 1, width - 1, height - 1, (height - 2) / 2,
+                           fill=fill or self.cget("bg"), outline=outline or self.cget("bg"), width=1)
         self.create_text(width / 2, height / 2, text=self._text, fill=text, font=self.font)
 
 
@@ -310,6 +458,7 @@ class NavItem(tk.Canvas):
         self.text, self.command, self.font = text, command, font
         self.active = False
         self._hover = False
+        self._images = {}
         self.bind("<Button-1>", lambda _e: command())
         self.bind("<Enter>", lambda _e: self._set_hover(True))
         self.bind("<Leave>", lambda _e: self._set_hover(False))
@@ -326,9 +475,16 @@ class NavItem(tk.Canvas):
     def _draw(self):
         self.delete("all")
         width, height = self.winfo_width(), self.HEIGHT
-        if self.active:
-            round_rect(self, 0, 0, width, height, 10, fill=SLATE, outline="")
-            round_rect(self, 0, 10, 3, height - 10, 1.5, fill=ORANGE, outline="")
+        if self.active and width > 1:
+            if width not in self._images:
+                self._images.clear()
+                self._images[width] = smooth_image(self, width, height, self.cget("bg"), [
+                    (0, 0, width, height, 10, SLATE, ""), (0, 10, 3, height - 10, 1.5, ORANGE, "")])
+            if self._images[width] is not None:
+                self.create_image(0, 0, image=self._images[width], anchor="nw")
+            else:
+                round_rect(self, 0, 0, width, height, 10, fill=SLATE, outline="")
+                round_rect(self, 0, 10, 3, height - 10, 1.5, fill=ORANGE, outline="")
         color = BONE if (self.active or self._hover) else ASH
         self.create_text(16, height / 2, text=self.text, anchor="w", fill=color, font=self.font)
 
@@ -451,7 +607,7 @@ class ScrollFrame(tk.Frame):
         if float(first) <= 0 and float(last) >= 1:
             self.scrollbar.pack_forget()
         elif not self.scrollbar.winfo_ismapped():
-            self.scrollbar.pack(side="right", fill="y")
+            self.scrollbar.pack(side="right", fill="y", padx=(6, 0))
 
     def _on_content(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))

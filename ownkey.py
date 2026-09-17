@@ -1550,7 +1550,8 @@ class SettingsWindow:
 
     def _combo(self, parent, values, state="readonly", width=None):
         var = tk.StringVar(self._win)
-        widget = ttk.Combobox(parent, textvariable=var, values=values, state=state, font=self.type.body)
+        widget = ttk.Combobox(parent, textvariable=var, values=values, state=state, font=self.type.body,
+                              height=12)
         if width:
             widget.configure(width=width)
         return var, widget
