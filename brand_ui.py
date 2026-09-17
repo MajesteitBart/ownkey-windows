@@ -99,7 +99,7 @@ def _style_combobox(root: tk.Misc, style: ttk.Style, type_: Type) -> None:
     the clam theme, a hover border, a hand cursor, and a list in brand colours."""
     style.configure("TCombobox", fieldbackground=SLATE, background=SLATE, bordercolor=LINE,
                     arrowcolor=BONE, arrowsize=14, lightcolor=SLATE, darkcolor=SLATE, foreground=BONE,
-                    selectbackground=SLATE, selectforeground=BONE, padding=(8, 5), font=type_.body)
+                    selectbackground=SLATE, selectforeground=BONE, padding=(8, 7), font=type_.body)
     style.map("TCombobox", fieldbackground=[("disabled", GRAPHITE), ("readonly", SLATE)],
               foreground=[("disabled", ASH), ("readonly", BONE)],
               bordercolor=[("disabled", LINE), ("focus", ORANGE), ("hover", ASH)],
@@ -209,6 +209,15 @@ def smooth_image(master, width, height, background, shapes=(), strokes=()):
     """
     if Image is None:
         return None
+    try:
+        return _render(master, width, height, background, shapes, strokes)
+    except Exception:
+        # A broken Pillow (a frozen build without its PNG plugin, say) costs the
+        # smooth edges, never the Settings window: callers draw polygons instead.
+        return None
+
+
+def _render(master, width, height, background, shapes, strokes):
     scale = SUPERSAMPLE
     width, height = max(1, int(round(width))), max(1, int(round(height)))
     image = Image.new("RGB", (width * scale, height * scale), _rgb(master, background))
@@ -654,6 +663,60 @@ class Kbd(tk.Label):
     def __init__(self, master, text, font, **kwargs):
         super().__init__(master, text=text, bg=SLATE, fg=BONE, font=font, padx=8, pady=2,
                          highlightthickness=1, highlightbackground=HAIRLINE, **kwargs)
+
+
+def run_smoke_test(argv, fonts_directory=None) -> int:
+    """Check the widget kit inside the actual frozen runtime: no tray, no hotkeys,
+    no config, no visible window. Writes a JSON report like the local smoke test."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    report = {"success": False, "pillow": getattr(Image, "__version__", None)}
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        if fonts_directory:
+            load_fonts(fonts_directory)
+        type_ = Type(root)
+        style_ttk(root, type_)
+        report["body_font"] = type_.body[0]
+        button = Button(root, "Save", variant="solid", font=type_.button)
+        toggle = Toggle(root, tk.BooleanVar(root, value=True))
+        card = Card(root)
+        dropdown = ttk.Combobox(root, values=("auto", "en", "nl"), state="readonly", font=type_.body)
+        bar = ttk.Scrollbar(root, orient="vertical", style="Ownkey.Vertical.TScrollbar")
+        for widget in (button, toggle, card, dropdown, bar):
+            widget.pack()
+        root.update()
+        popdown = root.tk.call("ttk::combobox::PopdownWindow", dropdown)
+        root.tk.call("ttk::combobox::ConfigureListbox", dropdown)  # fills the list without showing it
+        report.update(
+            button_shape=button.type(button.find_all()[0]),
+            toggle_shape=toggle.type(toggle.find_all()[0]),
+            card_corners=sum(1 for image in card._corner_images() if image is not None),
+            dropdown_items=int(root.tk.call(f"{popdown}.f.l", "size")),
+            dropdown_chevron="Ownkey.Combobox.chevron" in str(ttk.Style(root).layout("TCombobox")),
+            scrollbar_width=bar.winfo_reqwidth(),
+        )
+        report["success"] = (report["button_shape"] == "image" and report["toggle_shape"] == "image"
+                             and report["card_corners"] == 4
+                             and report["dropdown_items"] == 3 and report["dropdown_chevron"]
+                             and report["scrollbar_width"] >= 6)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+    with open(args.output, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2)
+    return 0 if report["success"] else 1
 
 
 def divider(master, pady=(10, 10)):

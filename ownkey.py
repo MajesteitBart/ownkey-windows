@@ -3416,6 +3416,9 @@ if __name__ == "__main__":
     if "--local-smoke-test" in sys.argv:
         from local_transcription import run_smoke_test
         sys.exit(run_smoke_test(sys.argv[sys.argv.index("--local-smoke-test") + 1:]))
+    if "--ui-smoke-test" in sys.argv:
+        sys.exit(brand_ui.run_smoke_test(sys.argv[sys.argv.index("--ui-smoke-test") + 1:],
+                                         resource_path("assets", "fonts")))
     instance = linux_desktop.SingleInstance() if sys.platform.startswith("linux") else None
     if instance and not instance.acquire():
         instance.activate()

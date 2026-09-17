@@ -227,6 +227,37 @@ class BrandWidgetTests(unittest.TestCase):
             button.pack()
             self.root.update()
             self.assertEqual(button.type(button.find_all()[0]), "polygon")
+        with patch.object(self.ui, "_render", side_effect=KeyError("PNG")):  # a broken Pillow
+            self.assertIsNone(self.ui.smooth_image(self.root, 10, 10, self.ui.KEY))
+            toggle = self.ui.Toggle(self.root, ownkey.tk.BooleanVar(self.root, value=False))
+            toggle.pack()
+            self.root.update()
+            self.assertEqual([toggle.type(item) for item in toggle.find_all()], ["polygon", "oval"])
+
+    def test_dropdowns_are_as_tall_as_text_fields(self):
+        type_ = self.ui.Type(self.root)
+        self.ui.style_ttk(self.root, type_)
+        dropdown = ownkey.ttk.Combobox(self.root, values=("a",), state="readonly", font=type_.body)
+        entry = self.ui.Entry(self.root, font=type_.body)
+        for widget in (dropdown, entry):
+            widget.pack()
+        self.root.update()
+        self.assertEqual(dropdown.winfo_reqheight(), entry.winfo_reqheight())
+
+    def test_ui_smoke_test_reports_the_widget_kit(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "ui.json")
+            self.root.destroy()  # the smoke test owns its own root
+            try:
+                code = self.ui.run_smoke_test(["--output", output])
+            finally:
+                self.root = ownkey.tk.Tk()
+                self.root.withdraw()
+            with open(output, encoding="utf-8") as handle:
+                report = json.load(handle)
+        self.assertEqual(code, 0, report)
+        self.assertEqual((report["button_shape"], report["card_corners"], report["dropdown_items"]), ("image", 4, 3))
 
     def test_scrollbars_are_wide_enough_to_see(self):
         self.ui.style_ttk(self.root, self.ui.Type(self.root))
