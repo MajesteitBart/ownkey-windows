@@ -349,6 +349,10 @@ def is_tauri_overlay_process_running() -> bool:
     """Check whether the Tauri overlay process is already running."""
     if os.name != "nt":
         return False
+    if os.environ.get("OWNKEY_OVERLAY_UDP", "").strip():
+        # A development copy on its own port: the overlay of an installed Ownkey
+        # listens elsewhere, so only the overlay this process started counts.
+        return False
     try:
         proc = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {TAURI_OVERLAY_PROCESS_NAME}"],

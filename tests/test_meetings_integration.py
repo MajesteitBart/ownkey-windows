@@ -194,6 +194,10 @@ class MeetingWindowTests(unittest.TestCase):
             self.assertEqual(ownkey._overlay_bridge_addr(), ("127.0.0.1", 38499))
         with patch.dict(os.environ, {"OWNKEY_OVERLAY_UDP": "nonsense"}):
             self.assertEqual(ownkey._overlay_bridge_addr(), ("127.0.0.1", 38485))
+        # On its own port, the overlay of an installed Ownkey must not count as ours.
+        with patch.dict(os.environ, {"OWNKEY_OVERLAY_UDP": "127.0.0.1:38499"}),                 patch.object(ownkey.subprocess, "run", return_value=Mock(stdout="ownkey-overlay.exe")) as run:
+            self.assertFalse(ownkey.is_tauri_overlay_process_running())
+            run.assert_not_called()
 
 
 class PillTests(unittest.TestCase):
