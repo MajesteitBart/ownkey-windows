@@ -108,7 +108,7 @@ usable slice, not the whole spec.
 
 ## Verified on this machine
 
-- 206 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
+- 215 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
   capture session (timeline, pause, padding, overrun, dead source), windowing
   and passage building, analysis prompts and citation validation, export,
   service jobs, HTTP API, tray integration, config normalization.
