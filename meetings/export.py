@@ -18,7 +18,7 @@ def _speaker_names(speakers: list[dict]) -> dict[str, str]:
 
 
 def to_markdown(meeting: dict, notes: dict, passages: list[dict], speakers: list[dict],
-                summary: dict | None, drafts: list[dict], answers: list[dict]) -> str:
+                summary: dict | None, drafts: list[dict], answers: list[dict], *, summary_rev: int | None = None) -> str:
     names = _speaker_names(speakers)
     title = meeting.get("title") or "Untitled meeting"
     created = time.strftime("%Y-%m-%d %H:%M", time.localtime(meeting.get("created_at", 0)))
@@ -27,7 +27,10 @@ def to_markdown(meeting: dict, notes: dict, passages: list[dict], speakers: list
     lines += ["## My thoughts", "", (notes.get("content") or "_No notes._").rstrip(), ""]
     if summary:
         lines += ["## Summary", ""]
-        lines += summary_markdown(summary, passages)
+        outdated = summary_rev is not None and summary_rev != meeting.get('transcript_rev')
+        if outdated:
+            lines += ['_Outdated summary: the transcript changed. Regenerate before relying on it._', '']
+        lines += summary_markdown(summary, [] if outdated else passages)
         lines.append("")
     lines += ["## Transcript", ""]
     if not passages:
@@ -40,9 +43,14 @@ def to_markdown(meeting: dict, notes: dict, passages: list[dict], speakers: list
     if answers:
         lines += ["## Questions and answers", ""]
         for answer in answers:
+            if answer.get('input_rev', meeting.get('transcript_rev')) != meeting.get('transcript_rev'):
+                lines += ['_Outdated answer: the transcript changed. Ask again to update it._', '']
             lines += [f"**Q: {answer.get('question', '')}**", "", answer.get("content", ""), ""]
     if drafts:
-        lines += ["## Follow-up draft", "", drafts[-1].get("content", ""), ""]
+        lines += ["## Follow-up draft", ""]
+        if drafts[-1].get('input_rev', meeting.get('transcript_rev')) != meeting.get('transcript_rev'):
+            lines += ['_Outdated draft: the transcript changed. Regenerate before relying on its text or timestamps._', '']
+        lines += [drafts[-1].get("content", ""), ""]
     return "\n".join(lines).rstrip() + "\n"
 
 

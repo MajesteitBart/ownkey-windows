@@ -108,6 +108,17 @@ class AnswerTests(unittest.TestCase):
 
 
 class DraftAndExportTests(unittest.TestCase):
+    def test_export_warns_about_superseded_analyses_and_omits_stale_summary_citations(self):
+        summary = {'overview': 'Synthetic summary.', 'decisions': [
+            {'text': 'Synthetic decision.', 'refs': ['p0001'], 'status': 'decided'}]}
+        text = export.to_markdown({'title': 'Synthetic', 'transcript_rev': 2}, {}, PASSAGES, SPEAKERS,
+            summary, [{'input_rev': 1, 'content': 'Old draft.'}],
+            [{'input_rev': 1, 'question': 'Synthetic?', 'content': 'Old answer.'}], summary_rev=1)
+        self.assertIn('Outdated summary', text)
+        self.assertIn('Outdated answer', text)
+        self.assertIn('Outdated draft', text)
+        self.assertNotIn('Synthetic decision. [12:04]', text)
+
     def test_draft_without_summary_reads_every_section(self):
         extracted = []
 

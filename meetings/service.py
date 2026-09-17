@@ -1094,7 +1094,8 @@ class MeetingService:
             return f"{stamp}-{stem}.json", body.encode("utf-8")
         summary = detail["summary"]["content"] if detail["summary"] else None
         body = export.to_markdown(meeting, detail["notes"], detail["passages"], detail["speakers"], summary,
-                                  detail["drafts"], detail["answers"])
+                                  detail["drafts"], detail["answers"],
+                                  summary_rev=detail['summary']['input_rev'] if detail['summary'] else None)
         return f"{stamp}-{stem}.md", body.encode("utf-8")
 
     # ── shutdown ───────────────────────────────────────────────────

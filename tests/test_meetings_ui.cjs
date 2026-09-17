@@ -14,7 +14,7 @@ function ui() {
     document: { addEventListener() {}, querySelector: (selector) => selector.startsWith('#audio-') ? {} : null },
     window: { addEventListener() {} },
   };
-  vm.runInNewContext(source.slice(0, boot) + '\n globalThis.ui = { state, renderBanners };\n})();', context);
+  vm.runInNewContext(source.slice(0, boot) + '\n globalThis.ui = { state, renderBanners, renderSummary };\n})();', context);
   context.ui.state.tab = 'transcript';
   context.ui.state.detail = {
     meeting: { state: 'stopped', audio_state: 'kept' }, capture: null, events: [],
@@ -69,4 +69,23 @@ test('interrupted speaker and analysis jobs retain their retry actions', () => {
     assert.match(renderBanners(), new RegExp(`data-${kind}`));
     assert.match(renderBanners(), /was interrupted/);
   }
+});
+
+test('superseded analyses warn and cannot cite reused passage ids', () => {
+  const { state, renderSummary } = ui();
+  state.detail.meeting.transcript_rev = 2;
+  state.detail.passages = [{ id: 'p0001', start: 10, text: 'Synthetic replacement.' }];
+  state.detail.summary = { input_rev: 1, content: { overview: 'Old synthetic summary.',
+    decisions: [{ text: 'Synthetic decision.', refs: ['p0001'], status: 'decided' }] } };
+  state.detail.answers = [{ input_rev: 1, question: 'Synthetic question?', content: 'Old answer.', refs: ['p0001'] }];
+  state.detail.drafts = [{ input_rev: 1, content: 'Old synthetic draft.' }];
+  const old = renderSummary({});
+  assert.match(old, /Outdated answer/);
+  assert.match(old, /Outdated draft/);
+  assert.match(old, /Regenerate the summary to restore citations/);
+  assert.doesNotMatch(old, /data-cite=/);
+  for (const a of [state.detail.summary, ...state.detail.answers, ...state.detail.drafts]) a.input_rev = 2;
+  const current = renderSummary({});
+  assert.doesNotMatch(current, /Outdated answer|Outdated draft|restore citations/);
+  assert.match(current, /data-cite="p0001"/);
 });
