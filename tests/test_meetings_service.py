@@ -381,6 +381,52 @@ class ServiceTests(unittest.TestCase):
         finally:
             self.service._live.pop(mid, None)
 
+    def test_batch_retranscription_preserves_edits_until_complete_replacement(self):
+        from meetings import audio
+        self.cfg.update(meetings_audio_provider='mistral', meetings_audio_model='test',
+                        meetings_audio_endpoint='https://example.invalid', meetings_audio_api_key='synthetic')
+        for fails in (True, False):
+            with self.subTest(fails=fails):
+                mid = self.store.create_meeting('Synthetic retranscription', {'mic': {}})['id']
+                self.store.update_meeting(mid, state='stopped', transcribed_at=time.time())
+                self.store.ensure_speaker(mid, 'person', 'mic', 'Synthetic speaker')
+                self.store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                    'start': 0, 'end': 1, 'text': 'Synthetic existing transcript.'}], 1)
+                self.service.correct_passage(mid, 'p0001', 'Synthetic saved correction.')
+                self.service.assign_speaker(mid, 'p0001', 'person')
+                before = self.store.list_passages(mid)
+                path = self.store.audio_dir(mid, MIC) / 'fixture.wav'
+                samples = np.full(31 * 16000, 3000, dtype=np.int16)
+                audio.write_wav(str(path), samples)
+                self.store.add_chunk(mid, MIC, 0, 0, samples.size, str(path))
+                entered, release = threading.Event(), threading.Event()
+                calls = []
+                def decode(*args):
+                    calls.append(True)
+                    if len(calls) == 1:
+                        return 'Synthetic existing transcript.'
+                    entered.set()
+                    if not release.wait(5):
+                        raise RuntimeError('Test did not release provider')
+                    if fails:
+                        raise RuntimeError('Synthetic provider failure')
+                    return 'Synthetic existing transcript.'
+                self.service._cloud_transcriber = decode
+                job = self.service.transcribe(mid, remote_ok=True)
+                try:
+                    self.assertTrue(entered.wait(3))
+                    self.assertGreaterEqual(len(calls), 2)
+                    self.assertEqual(self.store.list_passages(mid), before)
+                finally:
+                    release.set()
+                self.assertTrue(wait_for(lambda: self.store.get_job(job['id'])['state'] in ('done', 'error')))
+                self.assertEqual(self.store.get_job(job['id'])['state'], 'error' if fails else 'done')
+                after = self.store.list_passages(mid)
+                if fails:
+                    self.assertEqual(after, before)
+                self.assertEqual(after[0]['corrected'], 'Synthetic saved correction.')
+                self.assertEqual(after[0]['speaker_id'], 'person')
+
     def test_delete_during_cloud_decode_cannot_restore_transcript(self):
         started, release = threading.Event(), threading.Event()
         def cloud(*args):
@@ -485,9 +531,11 @@ class ShutdownTests(unittest.TestCase):
                     audio.write_wav(str(path), np.full(16000, 3000, dtype=np.int16))
                     store.add_chunk(mid, MIC, 0, 0, 16000, str(path))
                     is_analysis = kind in ('summary', 'draft')
-                    if is_analysis:
+                    had_transcript = kind != 'speakers'
+                    if had_transcript:
                         store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
                             'start': 0, 'end': 1, 'text': 'Synthetic saved passage.'}], 1)
+                        store.correct_passage(mid, 'p0001', 'Synthetic saved correction.')
                     job = store.create_job(mid, kind)
                     service._jobs.put(job['id'])
                     closer = None
@@ -506,7 +554,9 @@ class ShutdownTests(unittest.TestCase):
                             self.assertEqual(recovered.get_job(job['id'])['state'], 'done' if saved else 'interrupted')
                             self.assertEqual(len(recovered.list_analyses(mid)), int(saved))
                             self.assertEqual(recovered.get_meeting(mid)['audio_state'], 'kept')
-                            self.assertEqual(len(recovered.list_passages(mid)), int(is_analysis))
+                            self.assertEqual(len(recovered.list_passages(mid)), int(had_transcript))
+                            if had_transcript:
+                                self.assertEqual(recovered.get_passage(mid, 'p0001')['corrected'], 'Synthetic saved correction.')
                             self.assertTrue(path.exists())
                         finally:
                             recovered.close()

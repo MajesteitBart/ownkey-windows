@@ -906,7 +906,9 @@ class MeetingService:
             where = f"{engine['label']} ({'remote' if engine['remote'] else 'local endpoint'})"
         decode = self._yielding(decode, meeting_id)
         try:
-            self.store.clear_passages(meeting_id)
+            # Keep an existing transcript and its edits until the complete
+            # replacement can be committed in one store transaction.
+            replacing_existing = bool(self.store.list_passages(meeting_id))
             chunks_by_source = {}
             for chunk in self.store.list_chunks(meeting_id):
                 chunks_by_source.setdefault(chunk["source"], []).append(chunk)
@@ -926,7 +928,7 @@ class MeetingService:
                     fraction = min(0.99, (done_before + done) / total_seconds)
                     self.store.update_job(job["id"], progress=fraction,
                                           detail=f"{SOURCE_LABELS.get(source, source)} · {int(done // 60)}:{int(done % 60):02d} of {int(total // 60)}:{int(total % 60):02d}")
-                    if new:
+                    if new and not replacing_existing:
                         provisional = [dict(p, id=f"{source}-{p['id']}") for p in new]
                         self.store.append_passages(meeting_id, provisional, meeting["transcript_rev"] + 1)
 

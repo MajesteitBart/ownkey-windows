@@ -41,6 +41,19 @@ test('running and completed retries remove the interrupted banner', () => {
   assert.doesNotMatch(renderBanners(), /was interrupted|Retry/);
 });
 
+test('recovered interrupted capture stops offering transcription after success', () => {
+  const { state, renderBanners } = ui();
+  state.detail.meeting.state = 'interrupted';
+  assert.match(renderBanners(), /Transcription was interrupted/);
+  assert.doesNotMatch(renderBanners(), /Transcribe now/);
+  state.detail.jobs.push({ kind: 'transcribe', state: 'done', progress: 1 });
+  state.detail.meeting.transcribed_at = 1000;
+  assert.doesNotMatch(renderBanners(), /data-transcribe|was interrupted|Retry/);
+  state.detail.jobs = [];
+  state.detail.meeting.transcribed_at = null;
+  assert.match(renderBanners(), /Transcribe now/);
+});
+
 test('removed audio does not offer an impossible transcription retry', () => {
   const { state, renderBanners } = ui();
   state.detail.meeting.audio_state = 'removed';
