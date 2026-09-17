@@ -108,7 +108,7 @@ usable slice, not the whole spec.
 
 ## Verified on this machine
 
-- 205 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
+- 206 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
   capture session (timeline, pause, padding, overrun, dead source), windowing
   and passage building, analysis prompts and citation validation, export,
   service jobs, HTTP API, tray integration, config normalization.
@@ -146,6 +146,11 @@ usable slice, not the whole spec.
   speech have not been tried; pyannoteAI documents no size limit.
 - Code-switching without a pause inside one window can still lose words;
   the pause-based windowing only helps when speakers pause between turns.
+- Two Ownkey processes on one library. Ownkey has no single-instance guard
+  on Windows, and a second process reconciles the library at start: a
+  meeting the first process is still recording would be marked interrupted.
+  Run a development copy with `OWNKEY_MEETINGS_LIBRARY` set to another
+  directory while the installed Ownkey runs.
 - Packaging: `Ownkey.spec` bundles `meetings/ui` and the `soundcard` data
   files. An unsigned development installer (0.6.0) was built and its frozen
   `Ownkey.exe --local-smoke-test` passed, but the installer itself was not
@@ -173,4 +178,6 @@ py -m meetings --fixture mic=a.wav --fixture system=b.wav --library C:\tmp\lib
 ```
 
 Prints the window URL. `--no-browser` keeps it headless for API tests.
-Set `OWNKEY_DEBUG_MEETINGS=1` to log HTTP requests.
+Set `OWNKEY_DEBUG_MEETINGS=1` to log HTTP requests. `OWNKEY_MEETINGS_LIBRARY`
+moves the library for a whole Ownkey process (the app-level tests set it, so
+they never open the real library).

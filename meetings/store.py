@@ -119,6 +119,11 @@ RETENTION_DAYS = 7
 
 
 def default_library_root() -> Path:
+    """%LOCALAPPDATA%\Ownkey\meetings, or OWNKEY_MEETINGS_LIBRARY when set (tests and
+    a second Ownkey run next to the installed one must not touch the real library)."""
+    override = os.environ.get("OWNKEY_MEETINGS_LIBRARY", "").strip()
+    if override:
+        return Path(override)
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return Path(base) / "Ownkey" / "meetings"
 

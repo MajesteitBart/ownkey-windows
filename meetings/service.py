@@ -889,6 +889,8 @@ class MeetingService:
 
     # ── shutdown ───────────────────────────────────────────────────
     def close(self, *, stop_recording: bool = True) -> None:
+        """Stops capture, waits briefly for the job worker and closes the library.
+        A worker still busy with a job keeps the database open until the process ends."""
         self._closed = True
         with self._lock:
             session = self._session
@@ -899,6 +901,11 @@ class MeetingService:
                     pass
             self._session, self._session_meeting = None, None
         self._worker.join(timeout=2.0)
+        if not self._worker.is_alive():
+            try:
+                self.store.close()
+            except Exception:
+                pass
 
 
 def describe_error(exc: Exception) -> str:

@@ -1,8 +1,10 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from meetings.store import MeetingStore
+from meetings.store import MeetingStore, default_library_root
 
 
 class StoreTests(unittest.TestCase):
@@ -116,6 +118,15 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.store.audio_expired(self.store.get_meeting(mid)))
         self.store.update_meeting(mid, retention="after_transcription", audio_state="removed")
         self.assertFalse(self.store.audio_expired(self.store.get_meeting(mid)))
+
+
+class LibraryRootTests(unittest.TestCase):
+    def test_environment_override_wins_over_localappdata(self):
+        local = os.path.join(os.sep, 'Users', 'x', 'AppData', 'Local')
+        with patch.dict(os.environ, {'OWNKEY_MEETINGS_LIBRARY': '', 'LOCALAPPDATA': local}):
+            self.assertEqual(default_library_root(), Path(local) / 'Ownkey' / 'meetings')
+        with patch.dict(os.environ, {'OWNKEY_MEETINGS_LIBRARY': os.path.join(os.sep, 'lib')}):
+            self.assertEqual(default_library_root(), Path(os.sep) / 'lib')
 
 
 if __name__ == "__main__":

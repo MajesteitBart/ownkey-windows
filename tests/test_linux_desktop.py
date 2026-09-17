@@ -106,6 +106,9 @@ class LinuxLifecycleTests(unittest.TestCase):
         import subprocess
         import sys
         code = """
+import os
+import tempfile
+os.environ['OWNKEY_MEETINGS_LIBRARY'] = tempfile.mkdtemp()  # never the real library
 import ownkey
 from unittest.mock import patch
 app = ownkey.OwnkeyApp()

@@ -139,6 +139,7 @@ class EntryWidgetTests(unittest.TestCase):
 class OverlayProcessTests(unittest.TestCase):
     def test_application_closes_settings_and_background_workers_on_quit(self):
         code = """
+import os
 import tempfile
 from unittest.mock import Mock, patch
 import ownkey
@@ -148,7 +149,10 @@ with tempfile.TemporaryDirectory() as directory, \
         patch.object(ownkey, 'is_startup_enabled', return_value=True), \
         patch.object(ownkey, 'LocalModelManager', side_effect=lambda **kwargs: manager_type(directory)), \
         patch.object(ownkey.pystray, 'Icon', return_value=Mock()):
+    os.environ['OWNKEY_MEETINGS_LIBRARY'] = os.path.join(directory, 'meetings')  # never the real library
     app = ownkey.OwnkeyApp()
+    assert app.meetings is not None, app._meetings_error
+    assert str(app.meetings.store.root).startswith(directory), app.meetings.store.root
     app._overlay = Mock()
     app._tauri_overlay_exe = None
     app._open_settings()
