@@ -333,6 +333,7 @@ class ServiceTests(unittest.TestCase):
         self.assertGreater(self.transcriber.decoded, 0)
 
     def test_interrupted_source_notifies_and_transcription_can_run_later(self):
+        self.cfg['meetings_retention'] = 'after_transcription'
         meeting = self.record()
         self.sources[SYSTEM].fail("Speakers disappeared")
         self.assertTrue(wait_for(lambda: not self.service.is_capturing()))
@@ -341,6 +342,44 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("Speakers disappeared", self.notifications[0])
         job = self.service.transcribe(meeting["id"])
         self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] == "done"))
+        self.assertTrue(wait_for(lambda: self.store.get_meeting(meeting['id'])['audio_state'] == 'removed'))
+
+    def test_analysis_consent_discloses_notes_for_the_selected_action(self):
+        mid = self.store.create_meeting('Synthetic consent test', {})['id']
+        for action in ('summary', 'question'):
+            for notes in (False, True):
+                with self.subTest(action=action, notes=notes), self.assertRaises(ConsentRequired) as consent:
+                    if action == 'summary':
+                        self.service.summarize(mid, include_notes=notes)
+                    else:
+                        self.service.ask(mid, 'Synthetic question?', include_notes=notes)
+                self.assertEqual('My thoughts' in consent.exception.disclosure['sent'], notes)
+                self.assertEqual('My thoughts' in consent.exception.disclosure['not_sent'], not notes)
+        self.assertEqual(self.chats, [], 'Disclosure happens before contacting the provider')
+
+    def test_diarization_blocks_passage_edits_including_live_meetings(self):
+        mid = self.store.create_meeting('Synthetic speaker edit test', {})['id']
+        self.store.ensure_speaker(mid, 'mic', 'mic', 'Microphone')
+        self.store.ensure_speaker(mid, 'person', 'mic', 'Synthetic speaker')
+        self.store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+            'start': 0, 'end': 1, 'text': 'Synthetic passage.'}], 1)
+        job = self.store.create_job(mid, 'speakers')
+        try:
+            for live in (False, True):
+                if live:
+                    self.service._live[mid] = object()  # Completed live session still has a coordinator entry.
+                for state in ('queued', 'running'):
+                    self.store.update_job(job['id'], state=state)
+                    with self.subTest(live=live, state=state):
+                        with self.assertRaisesRegex(MeetingError, 'speaker labelling'):
+                            self.service.assign_speaker(mid, 'p0001', 'person')
+                        with self.assertRaisesRegex(MeetingError, 'speaker labelling'):
+                            self.service.correct_passage(mid, 'p0001', 'Synthetic correction.')
+            self.assertEqual(self.store.get_passage(mid, 'p0001')['speaker_id'], 'mic')
+            self.store.update_job(job['id'], state='done')
+            self.assertEqual(self.service.assign_speaker(mid, 'p0001', 'person')['speaker_id'], 'person')
+        finally:
+            self.service._live.pop(mid, None)
 
     def test_delete_during_cloud_decode_cannot_restore_transcript(self):
         started, release = threading.Event(), threading.Event()
@@ -416,9 +455,9 @@ class RetentionTests(unittest.TestCase):
 
 
 class ShutdownTests(unittest.TestCase):
-    def test_shutdown_during_provider_call_persists_interruption(self):
+    def test_shutdown_outcome_matches_committed_provider_results(self):
         from meetings import audio
-        for kind in ('transcribe', 'speakers'):
+        for kind in ('transcribe', 'speakers', 'summary', 'draft'):
             for fails in (False, True):
                 with self.subTest(kind=kind, fails=fails), tempfile.TemporaryDirectory() as directory:
                     started, release = threading.Event(), threading.Event()
@@ -428,19 +467,27 @@ class ShutdownTests(unittest.TestCase):
                             raise RuntimeError('Test did not release provider')
                         if fails:
                             raise RuntimeError('Provider stopped during shutdown')
-                        return 'Synthetic delayed text.' if kind == 'transcribe' else []
+                        if kind == 'summary':
+                            return json.dumps({'overview': 'Synthetic completed summary.', 'decisions': [], 'actions': [], 'questions': []})
+                        return [] if kind == 'speakers' else 'Synthetic delayed text.'
                     class Diarizer:
                         diarize_wav = staticmethod(provider)
                     store = MeetingStore(directory)
                     service = MeetingService(store, get_config=lambda: {
                         'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'test',
-                        'meetings_audio_endpoint': 'https://example.invalid', 'meetings_audio_api_key': 'synthetic'},
-                        cloud_transcriber=provider, diarizer_factory=lambda cfg: Diarizer())
+                        'meetings_audio_endpoint': 'https://example.invalid', 'meetings_audio_api_key': 'synthetic',
+                        'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid',
+                        'rewrite_model': 'test', 'rewrite_api_key': 'synthetic'},
+                        cloud_transcriber=provider, diarizer_factory=lambda cfg: Diarizer(), chat=provider)
                     mid = store.create_meeting('Synthetic shutdown test', {'mic': {}})['id']
                     store.update_meeting(mid, state='stopped')
                     path = store.audio_dir(mid, MIC) / 'test.wav'
                     audio.write_wav(str(path), np.full(16000, 3000, dtype=np.int16))
                     store.add_chunk(mid, MIC, 0, 0, 16000, str(path))
+                    is_analysis = kind in ('summary', 'draft')
+                    if is_analysis:
+                        store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                            'start': 0, 'end': 1, 'text': 'Synthetic saved passage.'}], 1)
                     job = store.create_job(mid, kind)
                     service._jobs.put(job['id'])
                     closer = None
@@ -455,9 +502,11 @@ class ShutdownTests(unittest.TestCase):
                         recovered = MeetingStore(directory)
                         try:
                             # Inspect the persisted result before startup reconciliation.
-                            self.assertEqual(recovered.get_job(job['id'])['state'], 'interrupted')
+                            saved = is_analysis and not fails
+                            self.assertEqual(recovered.get_job(job['id'])['state'], 'done' if saved else 'interrupted')
+                            self.assertEqual(len(recovered.list_analyses(mid)), int(saved))
                             self.assertEqual(recovered.get_meeting(mid)['audio_state'], 'kept')
-                            self.assertEqual(recovered.list_passages(mid), [])
+                            self.assertEqual(len(recovered.list_passages(mid)), int(is_analysis))
                             self.assertTrue(path.exists())
                         finally:
                             recovered.close()

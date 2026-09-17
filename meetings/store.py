@@ -671,7 +671,7 @@ class MeetingStore:
             return False
         if meeting.get("retention") == "keep":
             return False
-        if meeting.get("state") in ("recording", "paused", "interrupted"):
+        if meeting.get("state") in ("recording", "paused"):
             return False
         transcribed_at = meeting.get("transcribed_at")
         if not transcribed_at:

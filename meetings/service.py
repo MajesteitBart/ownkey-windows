@@ -231,10 +231,12 @@ class MeetingService:
     def _chat_call(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         """One model call; a reply cut off at the output limit is retried once
         with double the budget (reasoning models spend hidden tokens)."""
+        if self._closed:
+            raise MeetingError('Ownkey closed before processing finished.')
         try:
             return self._chat(cfg, system, user, max_tokens)
         except Exception as exc:
-            if "output limit" not in str(exc).lower():
+            if self._closed or "output limit" not in str(exc).lower():
                 raise
             return self._chat(cfg, system, user, max_tokens * 2)
 
@@ -535,9 +537,12 @@ class MeetingService:
         return row
 
     def _require_editable(self, meeting_id: str) -> None:
+        jobs = self.store.list_jobs(meeting_id, ("queued", "running"))
+        if any(job['kind'] == 'speakers' for job in jobs):
+            raise MeetingError("Wait for speaker labelling to finish before editing passages.")
         if meeting_id in self._live:
             return  # incremental commits never overwrite a completed passage
-        for job in self.store.list_jobs(meeting_id, ("queued", "running")):
+        for job in jobs:
             if job["kind"] == "transcribe":
                 raise MeetingError("Wait for transcription to finish before editing passages.")
 
@@ -639,7 +644,7 @@ class MeetingService:
         live.start()
 
     def summarize(self, meeting_id: str, *, include_notes: bool = False, remote_ok: bool = False) -> dict:
-        self._check_analysis_allowed(remote_ok)
+        self._check_analysis_allowed(remote_ok, include_notes=include_notes)
         if not self.store.list_passages(meeting_id):
             raise MeetingError("Transcribe the meeting first.")
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
@@ -661,7 +666,7 @@ class MeetingService:
         return job
 
     def ask(self, meeting_id: str, question: str, *, include_notes: bool = False, remote_ok: bool = False) -> dict:
-        self._check_analysis_allowed(remote_ok)
+        self._check_analysis_allowed(remote_ok, include_notes=include_notes)
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
@@ -685,23 +690,23 @@ class MeetingService:
             state="done" if result["answerable"] else "unanswerable")
         return row
 
-    def _check_analysis_allowed(self, remote_ok: bool) -> None:
+    def _check_analysis_allowed(self, remote_ok: bool, *, include_notes: bool = False) -> None:
         info = self.text_model_info()
         if not info["configured"]:
             raise MeetingError("No text model is configured. Open Settings > Rewriting and choose a provider.")
         if info["remote"] and not remote_ok and self.remote_policy() != "allow":
-            raise ConsentRequired(self.disclosure(info))
+            raise ConsentRequired(self.disclosure(info, include_notes=include_notes))
 
-    def disclosure(self, info: dict | None = None) -> dict:
+    def disclosure(self, info: dict | None = None, *, include_notes: bool = False) -> dict:
         info = info or self.text_model_info()
         return {
             "kind": "remote", "policy_key": "remote",
             "title": f"Ownkey will send meeting text to {info['label']}",
-            "intro": "Audio never leaves this PC. The transcript text does, over your own key. "
+            "intro": "This action sends transcript text to the selected text provider using your key. "
                      "Check what goes out, then decide how to handle this next time.",
             "provider": info["label"], "model": info["model"], "host": info["host"],
-            "sent": ["Transcript text with passage ids and speaker names"],
-            "not_sent": ["Audio", "My thoughts (unless you include them for one question)"],
+            "sent": ["Transcript text with passage ids and speaker names"] + (["My thoughts"] if include_notes else []),
+            "not_sent": ["Audio"] + ([] if include_notes else ["My thoughts"]),
             "retention": "Long meetings go out in bounded sections with their passage ids. Nothing is cut off silently.",
             "policy": self.remote_policy(),
         }
@@ -763,7 +768,7 @@ class MeetingService:
         self._jobs.put(job["id"])
         return job
 
-    def _run_speakers(self, job: dict) -> None:
+    def _run_speakers(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
@@ -816,6 +821,7 @@ class MeetingService:
                              f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
         if meeting['retention'] == 'after_transcription':
             self.sweep_retention()
+        return True
 
     def _worker_loop(self) -> None:
         while not self._closed:
@@ -836,20 +842,22 @@ class MeetingService:
             self.store.update_job(job_id, state="running", attempts=job["attempts"] + 1)
             try:
                 if job["kind"] == "transcribe":
-                    self._run_transcribe(job)
+                    completed = self._run_transcribe(job)
                 elif job["kind"] == "summary":
-                    self._run_summary(job)
+                    completed = self._run_summary(job)
                 elif job["kind"] == "draft":
-                    self._run_draft(job)
+                    completed = self._run_draft(job)
                 elif job["kind"] == "speakers":
-                    self._run_speakers(job)
+                    completed = self._run_speakers(job)
                 else:
                     raise MeetingError(f"Unknown job {job['kind']}")
                 if job["meeting_id"] in self._cancelled:
                     self.store.update_job(job_id, state="cancelled")
-                elif self._closed:
+                elif self._closed and not completed:
                     self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
                 else:
+                    # A completed handler has saved its full result, even if
+                    # shutdown began while the provider was responding.
                     self.store.update_job(job_id, state="done", progress=1.0, error="")
                     if job['kind'] in ('transcribe', 'speakers'):
                         self.sweep_retention()
@@ -866,7 +874,7 @@ class MeetingService:
             finally:
                 self._running_job = None
 
-    def _run_transcribe(self, job: dict) -> None:
+    def _run_transcribe(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
         cfg = self.config()
         engine = self.transcription_engine(cfg)
@@ -937,11 +945,12 @@ class MeetingService:
             if attempt is not None:
                 attempt.close()
         self._after_transcribe(meeting_id)
+        return True
 
     def _after_transcribe(self, meeting_id):
         self._audio_cache.clear()
         latest = self.store.get_meeting(meeting_id)
-        if not latest or meeting_id in self._cancelled:
+        if not latest or meeting_id in self._cancelled or self._closed:
             return
         cfg = self.config()
         auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
@@ -973,7 +982,7 @@ class MeetingService:
 
         return wrapped
 
-    def _run_summary(self, job: dict) -> None:
+    def _run_summary(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
@@ -996,8 +1005,9 @@ class MeetingService:
         self.store.add_analysis(meeting_id, "summary", provider=info["provider"], model=info["model"],
                                 input_rev=meeting["transcript_rev"], include_notes=include_notes,
                                 content=json.dumps(summary, ensure_ascii=False), refs=analysis.summary_refs(summary))
+        return True
 
-    def _run_draft(self, job: dict) -> None:
+    def _run_draft(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
@@ -1019,6 +1029,7 @@ class MeetingService:
         self.store.add_analysis(meeting_id, "draft", provider=info["provider"], model=info["model"],
                                 input_rev=meeting["transcript_rev"], include_notes=False, content=text,
                                 refs=analysis.summary_refs(summary) if summary else [])
+        return True
 
     # ── audio, export, retention ───────────────────────────────────
     def audio_wav(self, meeting_id: str, source: str) -> bytes:

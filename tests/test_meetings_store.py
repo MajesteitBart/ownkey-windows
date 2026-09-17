@@ -145,6 +145,16 @@ class StoreTests(unittest.TestCase):
         self.store.update_meeting(mid, retention="after_transcription", audio_state="removed")
         self.assertFalse(self.store.audio_expired(self.store.get_meeting(mid)))
 
+    def test_recovered_interrupted_audio_expires_only_after_successful_transcription(self):
+        for policy in ('after_transcription', 'days7', 'keep'):
+            with self.subTest(policy=policy):
+                mid = self.store.create_meeting('Synthetic recovery', {}, policy)['id']
+                self.store.update_meeting(mid, state='interrupted')
+                self.assertFalse(self.store.audio_expired(self.store.get_meeting(mid)))
+                self.store.update_meeting(mid, transcribed_at=self.now)
+                self.assertEqual(self.store.audio_expired(self.store.get_meeting(mid)), policy == 'after_transcription')
+                self.assertEqual(self.store.audio_expired(self.store.get_meeting(mid), now=self.now + 7 * 86400), policy != 'keep')
+
 
 class LibraryRootTests(unittest.TestCase):
     def test_environment_override_wins_over_localappdata(self):
