@@ -1,14 +1,27 @@
 use std::{
     net::UdpSocket,
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, State, Url, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
-const UDP_ADDR: &str = "127.0.0.1:38485";
+const DEFAULT_UDP_ADDR: &str = "127.0.0.1:38485";
+const MEETINGS_WINDOW: &str = "meetings";
+
+// A development copy can run next to an installed Ownkey on another port.
+fn udp_addr() -> String {
+    std::env::var("OWNKEY_OVERLAY_UDP")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_UDP_ADDR.to_string())
+}
 // The window includes ~44px of bottom padding for the pill's drop shadow,
 // so the visible pill still floats the same distance above the taskbar.
 const TASKBAR_MARGIN_PX: i32 = 40;
@@ -163,6 +176,85 @@ struct SharedOverlayState {
     current: Mutex<OverlayState>,
 }
 
+// `{"meetings": {"url": "http://127.0.0.1:PORT/?token=...", "navigate": false}}`
+// asks for Ownkey's meeting window. The sender gets a JSON reply on the same
+// socket, so the backend can fall back to the browser when nothing answers.
+#[derive(Debug, Deserialize)]
+struct MeetingsRequest {
+    meetings: MeetingsCommand,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeetingsCommand {
+    url: String,
+    #[serde(default)]
+    navigate: bool,
+}
+
+fn is_local_meetings_url(url: &Url) -> bool {
+    url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port().is_some()
+}
+
+// The meeting window only ever shows Ownkey's own server on this PC.
+fn local_meetings_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|error| format!("invalid url: {error}"))?;
+    if is_local_meetings_url(&url) {
+        Ok(url)
+    } else {
+        Err("only Ownkey's local meeting server can be shown".to_string())
+    }
+}
+
+fn show_meetings_window(app: &AppHandle, url: Url, navigate: bool) -> Result<&'static str, String> {
+    if let Some(window) = app.get_webview_window(MEETINGS_WINDOW) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        if navigate {
+            window.navigate(url).map_err(|error| error.to_string())?;
+        }
+        return Ok("focused");
+    }
+    let port = url.port();
+    WebviewWindowBuilder::new(app, MEETINGS_WINDOW, WebviewUrl::External(url))
+        .title("Ownkey Meetings")
+        .inner_size(1280.0, 860.0)
+        .min_inner_size(920.0, 600.0)
+        .center()
+        .focused(true)
+        // The page is always dark, like the rest of Ownkey: match the title bar
+        // and do not flash white while the page loads.
+        .theme(Some(tauri::Theme::Dark))
+        .background_color(tauri::window::Color(14, 14, 14, 255))
+        // Exports download; nothing else may take this window off the local server.
+        .on_navigation(move |next| is_local_meetings_url(next) && next.port() == port)
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok("opened")
+}
+
+fn handle_meetings_request(app: &AppHandle, command: MeetingsCommand) -> serde_json::Value {
+    let url = match local_meetings_url(&command.url) {
+        Ok(url) => url,
+        Err(error) => return serde_json::json!({ "meetings": "refused", "error": error }),
+    };
+    // Windows are created on the event loop; this thread only waits for the result.
+    let (sender, receiver) = mpsc::channel();
+    let handle = app.clone();
+    let navigate = command.navigate;
+    let scheduled = app.run_on_main_thread(move || {
+        let _ = sender.send(show_meetings_window(&handle, url, navigate));
+    });
+    if scheduled.is_err() {
+        return serde_json::json!({ "meetings": "failed", "error": "event loop unavailable" });
+    }
+    match receiver.recv_timeout(Duration::from_secs(8)) {
+        Ok(Ok(status)) => serde_json::json!({ "meetings": status }),
+        Ok(Err(error)) => serde_json::json!({ "meetings": "failed", "error": error }),
+        Err(_) => serde_json::json!({ "meetings": "failed", "error": "timed out" }),
+    }
+}
+
 fn emit_overlay_state(app: &AppHandle, state: &OverlayState) {
     let _ = app.emit("overlay://state", state);
 }
@@ -242,20 +334,21 @@ fn set_overlay_state(
 
 fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
     thread::spawn(move || {
-        let socket = match UdpSocket::bind(UDP_ADDR) {
+        let address = udp_addr();
+        let socket = match UdpSocket::bind(&address) {
             Ok(socket) => socket,
             Err(error) => {
-                log::error!("failed to bind UDP bridge at {}: {}", UDP_ADDR, error);
+                log::error!("failed to bind UDP bridge at {}: {}", address, error);
                 return;
             }
         };
         let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
-        log::info!("overlay UDP bridge listening on {}", UDP_ADDR);
+        log::info!("overlay UDP bridge listening on {}", address);
 
         let mut buffer = [0_u8; 8192];
         loop {
             match socket.recv_from(&mut buffer) {
-                Ok((count, _)) => {
+                Ok((count, sender)) => {
                     let payload = match std::str::from_utf8(&buffer[..count]) {
                         Ok(text) => text,
                         Err(error) => {
@@ -263,6 +356,11 @@ fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
                             continue;
                         }
                     };
+                    if let Ok(request) = serde_json::from_str::<MeetingsRequest>(payload) {
+                        let reply = handle_meetings_request(&app, request.meetings);
+                        let _ = socket.send_to(reply.to_string().as_bytes(), sender);
+                        continue;
+                    }
                     if let Ok(next) = serde_json::from_str::<OverlayState>(payload) {
                         if let Ok(snapshot) = lock_state(&shared).map(|mut state| {
                             *state = OverlayState {
@@ -376,4 +474,33 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meeting_window_only_accepts_the_local_server() {
+        assert!(local_meetings_url("http://127.0.0.1:51234/?token=abc&view=new").is_ok());
+        for refused in [
+            "https://127.0.0.1:51234/",
+            "http://localhost:51234/",
+            "http://127.0.0.1/",
+            "http://example.com:80/",
+            "file:///C:/Windows/win.ini",
+            "not a url",
+        ] {
+            assert!(local_meetings_url(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn meetings_request_is_not_mistaken_for_overlay_state() {
+        let request = r#"{"meetings":{"url":"http://127.0.0.1:1/?token=t"}}"#;
+        let parsed = serde_json::from_str::<MeetingsRequest>(request).expect("request parses");
+        assert!(!parsed.meetings.navigate);
+        assert!(serde_json::from_str::<MeetingsRequest>(r#"{"visible":true}"#).is_err());
+        assert!(serde_json::from_str::<OverlayState>(request).is_err());
+    }
 }

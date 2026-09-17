@@ -9,6 +9,15 @@
   const START_TAB = ['thoughts', 'transcript', 'summary'].includes(PARAMS.get('tab')) ? PARAMS.get('tab') : '';
   const START_MEETING = PARAMS.get('meeting') || '';
   if (TOKEN) history.replaceState(null, '', location.pathname);
+  // Inside Ownkey's own window the webview's Back / Reload / Save as menu has no
+  // place. Text fields keep theirs for copy and paste. The flag survives a reload.
+  if (PARAMS.get('shell') === 'app') sessionStorage.setItem('ownkey-shell', 'app');
+  if (sessionStorage.getItem('ownkey-shell') === 'app') {
+    document.documentElement.classList.add('shell-app');
+    document.addEventListener('contextmenu', (e) => {
+      if (!e.target.closest('input, textarea, [contenteditable="true"]')) e.preventDefault();
+    });
+  }
 
   const ICONS = {
     mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8"/>',

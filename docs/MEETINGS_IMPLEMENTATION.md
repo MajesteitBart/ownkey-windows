@@ -6,11 +6,21 @@ usable slice, not the whole spec.
 
 ## What works
 
-- **Recording** from the tray: Meetings › New meeting opens the meeting window
-  in the default browser (a local page on 127.0.0.1 with a per-process token).
-  Microphone, system audio or both, with device pickers, a retention choice and
-  the "let everyone know you are recording" reminder. Nothing is written before
-  Start.
+- **Recording** from the tray: Meetings › New meeting opens the meeting
+  window. Microphone, system audio or both, with device pickers, a retention
+  choice and the "let everyone know you are recording" reminder. Nothing is
+  written before Start.
+- **Ownkey's own window.** The meeting interface is a local page on 127.0.0.1
+  with a per-process token, shown in a window of the overlay process (Tauri,
+  WebView2): title bar "Ownkey Meetings", its own taskbar entry, no address
+  bar, no browser extensions, no history. The backend asks for the window
+  over the overlay's UDP channel (`{"meetings": {"url", "navigate"}}`) and
+  gets a reply; "Open Meetings" focuses an open window without reloading it,
+  "New meeting" navigates it. The window refuses anything but
+  `http://127.0.0.1:<port>`, has no Tauri IPC permissions, and closing it
+  leaves the pill and a running recording alone. When the overlay does not
+  answer within six seconds (running from source without the overlay build,
+  an older overlay), the same page opens in the default browser.
 - **Durable capture.** Each source is its own mono 16 kHz track, written in
   five-second WAV chunks (`%LOCALAPPDATA%\Ownkey\meetings\<meeting>\audio\<source>`)
   that are flushed and renamed before their row is committed to `library.db`.
@@ -108,7 +118,7 @@ usable slice, not the whole spec.
 
 ## Verified on this machine
 
-- 215 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
+- 220 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
   capture session (timeline, pause, padding, overrun, dead source), windowing
   and passage building, analysis prompts and citation validation, export,
   service jobs, HTTP API, tray integration, config normalization.
@@ -144,6 +154,11 @@ usable slice, not the whole spec.
 - Speaker labels were exercised on a 29 s synthetic track only. Long
   uploads (a one-hour track is about 115 MB of WAV) and real overlapping
   speech have not been tried; pyannoteAI documents no size limit.
+- The meeting window was exercised with a test copy of the overlay on its
+  own UDP port next to the development harness: open, focus, navigate, close
+  and reopen, a refused non-local URL, and a Markdown export that landed in
+  Downloads. Opening it from the tray of an installed Ownkey, audio playback
+  inside it and the focus hand-over from the tray click have not been tried.
 - Code-switching without a pause inside one window can still lose words;
   the pause-based windowing only helps when speakers pause between turns.
 - Two Ownkey processes on one library. Ownkey has no single-instance guard
@@ -158,15 +173,16 @@ usable slice, not the whole spec.
 
 ## Screenshots
 
-Taken from the real window in `assets/readme/`, with the development
+Taken from the real interface in `assets/readme/`, with the development
 harness feeding synthetic speech clips as the microphone and call audio, so
 the transcripts repeat two test sentences. Everything else in them is what
-the app does today.
+the app does today. The transcript image is the native window; the other
+three are the same page captured without a window frame.
 
 | File | What it shows |
 |---|---|
 | `meetings-recording.png` | A meeting recording both tracks with live meters, Pause and Stop, and notes in My thoughts |
-| `meetings-transcript.png` | A transcript after speaker labels on a shared microphone and call audio: Speaker 1 to 3 to confirm, search, playback, retention |
+| `meetings-transcript.png` | The Ownkey Meetings window itself, captured from the overlay process: a transcript after speaker labels on a shared microphone and call audio, Speaker 1 to 3 to confirm, search, playback, retention |
 | `meetings-summary.png` | Summary with the remote-model line, two questions (one refused for lack of a passage) and a follow-up draft |
 | `meetings-new.png` | New meeting: sources, devices, the shared-microphone option, readiness rows and retention |
 
@@ -180,4 +196,7 @@ py -m meetings --fixture mic=a.wav --fixture system=b.wav --library C:\tmp\lib
 Prints the window URL. `--no-browser` keeps it headless for API tests.
 Set `OWNKEY_DEBUG_MEETINGS=1` to log HTTP requests. `OWNKEY_MEETINGS_LIBRARY`
 moves the library for a whole Ownkey process (the app-level tests set it, so
-they never open the real library).
+they never open the real library). `OWNKEY_OVERLAY_UDP=127.0.0.1:38499` moves
+the channel between Ownkey and its overlay process, so a development copy
+can run next to an installed Ownkey; both sides read it. The harness itself
+still opens the page in the browser.

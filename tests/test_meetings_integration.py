@@ -1,7 +1,9 @@
 import json
 import os
 import queue
+import socket
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -104,6 +106,94 @@ class TrayTests(unittest.TestCase):
         app._notify_error = Mock()
         app._open_meetings()
         app._notify_error.assert_called_once()
+
+
+class FakeOverlay:
+    """Answers meeting-window requests on a local UDP port like the overlay process does."""
+
+    def __init__(self, answer="opened"):
+        self.answer, self.requests = answer, []
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(("127.0.0.1", 0))
+        self.socket.settimeout(5)
+        self.address = self.socket.getsockname()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        try:
+            while True:
+                payload, sender = self.socket.recvfrom(8192)
+                self.requests.append(json.loads(payload.decode("utf-8")))
+                if self.answer is not None:
+                    self.socket.sendto(json.dumps({"meetings": self.answer}).encode("utf-8"), sender)
+        except OSError:
+            pass
+
+    def close(self):
+        self.socket.close()
+        self.thread.join(timeout=2)
+
+
+class MeetingWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.app = make_app()
+        self.app._tauri_overlay_exe = "ownkey-overlay.exe"
+        self.app._tauri_overlay_process = None
+        self.app._ensure_tauri_overlay = Mock()
+
+    def _with_overlay(self, answer):
+        overlay = FakeOverlay(answer)
+        self.addCleanup(overlay.close)
+        bridge = patch.object(ownkey, "OVERLAY_BRIDGE_ADDR", overlay.address)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        return overlay
+
+    def test_meetings_open_in_ownkeys_own_window(self):
+        overlay = self._with_overlay("opened")
+        with patch.object(ownkey.webbrowser, "open") as browser:
+            self.app._show_meeting_window("http://127.0.0.1:1/?token=abc", False)
+            self.app._show_meeting_window("http://127.0.0.1:1/?token=abc&view=new", True)
+        browser.assert_not_called()
+        self.app._ensure_tauri_overlay.assert_called()
+        self.assertEqual(overlay.requests, [
+            {"meetings": {"url": "http://127.0.0.1:1/?token=abc&shell=app", "navigate": False}},
+            {"meetings": {"url": "http://127.0.0.1:1/?token=abc&view=new&shell=app", "navigate": True}},
+        ])
+
+    def test_tray_entries_only_navigate_when_they_name_a_view(self):
+        with patch.object(ownkey.threading, "Thread") as thread:
+            self.app._open_meetings()
+            self.app._open_new_meeting()
+        calls = [call.kwargs["args"] for call in thread.call_args_list]
+        self.assertEqual(calls, [("http://127.0.0.1:1/?token=abc", False),
+                                 ("http://127.0.0.1:1/?token=abc&view=new", True)])
+
+    def test_the_browser_is_the_fallback(self):
+        url = "http://127.0.0.1:1/?token=abc"
+        with patch.object(ownkey.webbrowser, "open") as browser:
+            self._with_overlay("refused")
+            self.app._show_meeting_window(url, False)  # the overlay said no: do not ask again
+            browser.assert_called_once_with(url)
+            browser.reset_mock()
+            self.app._tauri_overlay_exe = None  # running from source without the overlay build
+            self.app._show_meeting_window(url, False)
+            browser.assert_called_once_with(url)
+
+    def test_a_silent_overlay_falls_back_after_the_wait(self):
+        overlay = self._with_overlay(None)
+        with patch.object(ownkey, "MEETING_WINDOW_WAIT_SECONDS", 0.3), patch.object(ownkey.webbrowser, "open") as browser:
+            self.assertIsNone(ownkey.request_meeting_window("http://127.0.0.1:1/", False, timeout=0.1))
+            self.app._show_meeting_window("http://127.0.0.1:1/?token=abc", False)
+        browser.assert_called_once_with("http://127.0.0.1:1/?token=abc")
+        self.assertGreaterEqual(len(overlay.requests), 2)
+
+    def test_bridge_address_can_move_for_a_development_copy(self):
+        with patch.dict(os.environ, {"OWNKEY_OVERLAY_UDP": "127.0.0.1:38499"}):
+            self.assertEqual(ownkey._overlay_bridge_addr(), ("127.0.0.1", 38499))
+        with patch.dict(os.environ, {"OWNKEY_OVERLAY_UDP": "nonsense"}):
+            self.assertEqual(ownkey._overlay_bridge_addr(), ("127.0.0.1", 38485))
 
 
 class PillTests(unittest.TestCase):

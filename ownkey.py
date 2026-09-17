@@ -232,7 +232,20 @@ MIN_AUDIO_BYTES = 800
 # If no speech activity was detected, skip very short captures.
 MIN_AUDIO_SECONDS_WITHOUT_ACTIVITY = 0.10
 CONNECTION_CHECK_INTERVAL = 12
-OVERLAY_BRIDGE_ADDR = ("127.0.0.1", 38485)
+
+
+def _overlay_bridge_addr() -> tuple[str, int]:
+    """127.0.0.1:38485, or OWNKEY_OVERLAY_UDP so a development copy can run next
+    to an installed Ownkey. The overlay process reads the same variable."""
+    host, _, port = os.environ.get("OWNKEY_OVERLAY_UDP", "").strip().rpartition(":")
+    if host and port.isdigit():
+        return host, int(port)
+    return "127.0.0.1", 38485
+
+
+OVERLAY_BRIDGE_ADDR = _overlay_bridge_addr()
+# How long Open Meetings waits for the overlay process before it uses the browser.
+MEETING_WINDOW_WAIT_SECONDS = 6.0
 NO_AUDIO_MESSAGE_DELAY_SECONDS = 5.0
 AUDIO_ACTIVITY_DB_THRESHOLD = -57.0
 AUDIO_ACTIVITY_LEVEL_THRESHOLD = 0.05
@@ -305,6 +318,23 @@ def find_tauri_overlay_exe() -> str | None:
             if os.path.isfile(candidate):
                 return candidate
     return None
+
+
+def request_meeting_window(url: str, navigate: bool, timeout: float = 2.0) -> str | None:
+    """Ask the overlay process for Ownkey's meeting window.
+
+    Returns its answer ("opened", "focused", "refused" or "failed"), or None
+    when nothing answered: no overlay, an older overlay, or one still starting.
+    """
+    body = json.dumps({"meetings": {"url": url, "navigate": bool(navigate)}}, separators=(",", ":"))
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(timeout)
+            client.sendto(body.encode("utf-8"), OVERLAY_BRIDGE_ADDR)
+            reply, _sender = client.recvfrom(4096)
+        return str(json.loads(reply.decode("utf-8")).get("meetings") or "") or None
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def tauri_overlay_only_enabled() -> bool:
@@ -2547,7 +2577,41 @@ class OwnkeyApp:
             self._notify_error(f"Meetings could not start: {self._meetings_error or 'unknown error'}")
             return
         url = self.meeting_server.url + ("&view=new" if view == "new" else "")
-        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+        threading.Thread(target=self._show_meeting_window, args=(url, view is not None), daemon=True).start()
+
+    def _show_meeting_window(self, url: str, navigate: bool) -> None:
+        """Meetings open in Ownkey's own window, hosted by the overlay process.
+        The default browser is the fallback when that process cannot answer."""
+        if not self._native_meeting_window(url + "&shell=app", navigate):
+            webbrowser.open(url)
+
+    def _native_meeting_window(self, url: str, navigate: bool) -> bool:
+        if not getattr(self, "_tauri_overlay_exe", None):
+            return False
+        try:
+            self._ensure_tauri_overlay()
+        except Exception as exc:
+            overlay_debug(f"overlay unavailable for the meeting window: {exc}")
+        deadline = time.monotonic() + MEETING_WINDOW_WAIT_SECONDS
+        while True:
+            self._allow_overlay_foreground()
+            status = request_meeting_window(url, navigate)
+            if status in ("opened", "focused"):
+                return True
+            if status is not None or time.monotonic() >= deadline:
+                return False  # refused or failed: asking again changes nothing
+            time.sleep(0.4)  # the overlay is still starting
+
+    def _allow_overlay_foreground(self) -> None:
+        """The tray click made this process the foreground one. Pass that on, or
+        Windows only flashes the meeting window in the taskbar."""
+        if os.name != "nt":
+            return
+        process = getattr(self, "_tauri_overlay_process", None)
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(process.pid if process else 0xFFFFFFFF)
+        except Exception:
+            pass
 
     def _meeting_pause_resume(self, icon=None, item=None) -> None:
         if not self._meeting_capturing():

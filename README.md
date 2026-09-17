@@ -221,7 +221,8 @@ Filler words, and Rewriting.
 
 ### Meetings
 
-Right-click the tray icon → **Meetings** → **New meeting**. Ownkey records
+Right-click the tray icon → **Meetings** → **New meeting**. The Ownkey
+Meetings window opens (its own window, not a browser tab). Ownkey records
 your microphone and, if you choose, the system audio of a call, keeps both
 tracks on your PC, and transcribes them after Stop with the same provider
 choices as dictation: the local Orukeet model (audio never leaves the PC, with
@@ -240,7 +241,7 @@ time. See [docs/MEETINGS_IMPLEMENTATION.md](docs/MEETINGS_IMPLEMENTATION.md)
 for what is built and verified.
 
 <p align="center">
-  <img src="assets/readme/meetings-transcript.png" alt="The Ownkey meeting window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">
+  <img src="assets/readme/meetings-transcript.png" alt="The Ownkey Meetings window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">
 </p>
 
 More screens: [recording with notes](assets/readme/meetings-recording.png),
