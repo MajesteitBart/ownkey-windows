@@ -2504,6 +2504,7 @@ class OwnkeyApp:
             self.meetings = MeetingService(
                 MeetingStore(), get_config=lambda: self.cfg, set_config=self._meeting_config_changed,
                 local_models=self.local_models, local_transcriber=self.local_transcriber,
+                get_local_audio=self._meeting_local_audio,
                 get_rewrite_key=get_rewrite_api_key, get_audio_key=get_effective_api_key, notify=self._notify_error,
                 open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
                 dictation_busy=lambda: bool(self._recording),
@@ -2516,6 +2517,10 @@ class OwnkeyApp:
             self.meetings = None
             self.meeting_server = None
             self._meetings_error = str(exc)
+
+    def _meeting_local_audio(self):
+        transcriber = self.local_transcriber
+        return transcriber.models, transcriber
 
     def _meeting_config_changed(self, changes: dict) -> None:
         with self._config_lock:

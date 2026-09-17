@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -336,9 +337,82 @@ class ServiceTests(unittest.TestCase):
         self.sources[SYSTEM].fail("Speakers disappeared")
         self.assertTrue(wait_for(lambda: not self.service.is_capturing()))
         self.assertEqual(self.store.get_meeting(meeting["id"])["state"], "interrupted")
+        self.assertTrue(wait_for(lambda: bool(self.notifications)))
         self.assertIn("Speakers disappeared", self.notifications[0])
         job = self.service.transcribe(meeting["id"])
         self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] == "done"))
+
+    def test_delete_during_cloud_decode_cannot_restore_transcript(self):
+        started, release = threading.Event(), threading.Event()
+        def cloud(*args):
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError('Test did not release the provider')
+            return 'Synthetic delayed response.'
+        self.service._cloud_transcriber = cloud
+        self.cfg.update(meetings_audio_provider='mistral', meetings_audio_model='test',
+                        meetings_audio_endpoint='https://example.invalid/transcriptions',
+                        meetings_audio_api_key='synthetic', meetings_transcription_policy='allow')
+        meeting = self.record()
+        self.service.stop()
+        try:
+            self.assertTrue(started.wait(3))
+            before = time.monotonic()
+            self.service.delete_meeting(meeting['id'])
+            self.assertLess(time.monotonic() - before, 2, 'Deletion must not wait for the provider')
+            self.assertIsNone(self.store.get_meeting(meeting['id']))
+        finally:
+            release.set()
+        self.assertTrue(wait_for(lambda: self.service._running_job is None))
+        self.assertEqual(self.store.list_passages(meeting['id']), [])
+        self.assertEqual(self.store.list_events(meeting['id']), [])
+        self.assertEqual(self.store.list_jobs(meeting['id']), [])
+        self.assertFalse(self.store.meeting_dir(meeting['id']).exists())
+
+    def test_after_transcription_retention_waits_for_job_then_removes_audio(self):
+        self.cfg['meetings_retention'] = 'after_transcription'
+        meeting = self.record()
+        self.service.stop()
+        self.assertTrue(wait_for(lambda: self.store.get_meeting(meeting['id'])['audio_state'] == 'removed'))
+        self.assertEqual(self.store.list_jobs(meeting['id'])[0]['state'], 'done')
+        self.assertTrue(self.store.list_passages(meeting['id']))
+
+    def test_drafts_do_not_reuse_stale_or_note_inclusive_summaries(self):
+        mid = self.store.create_meeting('Synthetic draft test', {})['id']
+        self.store.update_meeting(mid, state='stopped', transcript_rev=2)
+        for rev, notes in ((1, False), (2, True)):
+            with self.subTest(rev=rev, notes=notes):
+                self.store.add_analysis(mid, 'summary', provider='test', model='test', input_rev=rev,
+                    include_notes=notes, content='{"overview": "Old summary or private notes"}', refs=[])
+                job = self.store.create_job(mid, 'draft')
+                with patch('meetings.service.analysis.draft_followup', return_value='Synthetic draft') as draft:
+                    self.service._run_draft(job)
+                self.assertIsNone(draft.call_args.args[0])
+
+
+class RetentionTests(unittest.TestCase):
+    def test_periodic_sweep_expires_audio_without_restart_and_skips_busy_meeting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            now = [1000.]
+            store = MeetingStore(directory, clock=lambda: now[0])
+            with patch('meetings.service.RETENTION_SWEEP_SECONDS', 0.02):
+                service = MeetingService(store, get_config=lambda: {})
+                try:
+                    ids = [store.create_meeting('Synthetic retention test', {})['id'] for _ in range(2)]
+                    for mid in ids:
+                        store.update_meeting(mid, state='stopped', transcribed_at=now[0])
+                        store.audio_dir(mid, MIC).mkdir(parents=True)
+                        (store.audio_dir(mid, MIC) / 'test.wav').write_bytes(b'synthetic')
+                    job = store.create_job(ids[0], 'speakers')
+                    now[0] += 7 * 86400 + 1
+                    self.assertTrue(wait_for(lambda: store.get_meeting(ids[1])['audio_state'] == 'removed'))
+                    self.assertFalse(store.audio_dir(ids[1], MIC).exists())
+                    self.assertEqual(store.get_meeting(ids[0])['audio_state'], 'kept')
+                    store.update_job(job['id'], state='done')
+                    self.assertTrue(wait_for(lambda: store.get_meeting(ids[0])['audio_state'] == 'removed'))
+                finally:
+                    service.close()
+                self.assertFalse(service._maintenance.is_alive())
 
 
 class ServerTests(unittest.TestCase):

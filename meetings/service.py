@@ -42,6 +42,7 @@ POLICY_KEYS = {"remote": "meetings_remote_policy", "upload": "meetings_upload_po
                "live_transcription": "meetings_live_transcription_policy",
                "live_speakers": "meetings_live_speakers_policy"}
 CLOUD_WINDOW_NOTE = "windows of up to 28 seconds"
+RETENTION_SWEEP_SECONDS = 60
 
 
 class MeetingError(RuntimeError):
@@ -61,7 +62,7 @@ class MeetingService:
                  local_transcriber=None, chat=None, get_rewrite_key=None, get_audio_key=None, notify=None,
                  open_settings=None, source_factory=None, on_capture_change=None, diarizer_factory=None,
                  cloud_transcriber=None, dictation_busy=None, yield_to=None, clock=time.monotonic,
-                 stream_factory=None):
+                 stream_factory=None, get_local_audio=None):
         self.store = store
         self._on_capture_change = on_capture_change or (lambda: None)
         # Dictation comes first: a meeting cannot start over a held hotkey, and
@@ -75,6 +76,7 @@ class MeetingService:
         self._set_config = set_config or (lambda changes: None)
         self.local_models = local_models
         self.local_transcriber = local_transcriber
+        self._get_local_audio = get_local_audio or (lambda: (self.local_models, self.local_transcriber))
         self._chat = chat or self._default_chat
         self._get_rewrite_key = get_rewrite_key or (lambda cfg: str(cfg.get("rewrite_api_key", "") or ""))
         self.notify = notify or (lambda message: None)
@@ -99,6 +101,9 @@ class MeetingService:
             self.sweep_retention()
         except Exception:
             pass
+        self._maintenance_stop = threading.Event()
+        self._maintenance = threading.Thread(target=self._retention_loop, daemon=True, name="meeting-retention")
+        self._maintenance.start()
 
     # ── config helpers ─────────────────────────────────────────────
     def config(self) -> dict:
@@ -152,8 +157,9 @@ class MeetingService:
                 "configured": configured}
 
     def local_model_info(self) -> dict:
-        installed = bool(self.local_models and self.local_models.files_present())
-        state = self.local_transcriber.snapshot() if self.local_transcriber else {"state": "Unavailable"}
+        models, transcriber = self._get_local_audio()
+        installed = bool(models and models.files_present())
+        state = transcriber.snapshot() if transcriber else {"state": "Unavailable"}
         return {"installed": installed, "state": state.get("state", ""), "error": state.get("error", "")}
 
     def transcription_policy(self) -> str:
@@ -544,9 +550,8 @@ class MeetingService:
             if self._session_meeting == meeting_id and self._session is not None:
                 self._session.stop("Deleted while recording")
                 self._session, self._session_meeting = None, None
-        deadline = time.monotonic() + 30
-        while self._running_job and self._running_job.get("meeting_id") == meeting_id and time.monotonic() < deadline:
-            time.sleep(0.05)
+        # In-flight provider calls can finish later; store transactions reject
+        # writes for deleted meetings, so deletion need not wait for the network.
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             self.store.update_job(job["id"], state="cancelled")
         if live:
@@ -596,9 +601,10 @@ class MeetingService:
         cfg = dict(cfg)
         def decoder_factory():
             if engine['kind'] == 'local':
-                if not self.local_models or not self.local_models.files_present() or not self.local_transcriber:
+                models, transcriber = self._get_local_audio()
+                if not models or not models.files_present() or not transcriber:
                     raise MeetingError('Orukeet is not installed. Audio is saved; install it in Settings and retry.')
-                attempt = self.local_transcriber.begin_attempt()
+                attempt = transcriber.begin_attempt()
                 def decode(wav):
                     return attempt.transcribe_timed(wav, vocabulary=cfg.get('vocabulary', ()))
                 return decode, attempt.close
@@ -805,7 +811,7 @@ class MeetingService:
         self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
                              f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
         if meeting['retention'] == 'after_transcription':
-            self.remove_audio(meeting_id, processing_complete=True)
+            self.sweep_retention()
 
     def _worker_loop(self) -> None:
         while not self._closed:
@@ -836,7 +842,12 @@ class MeetingService:
                     self.store.update_job(job_id, state="cancelled")
                 else:
                     self.store.update_job(job_id, state="done", progress=1.0, error="")
+                    if job['kind'] in ('transcribe', 'speakers'):
+                        self.sweep_retention()
             except Exception as exc:
+                if job["meeting_id"] in self._cancelled:
+                    self.store.update_job(job_id, state="cancelled")
+                    continue
                 message = describe_error(exc)
                 self.store.update_job(job_id, state="error", error=message)
                 self.notify(f"Meeting {job['kind']} failed: {message}")
@@ -852,11 +863,12 @@ class MeetingService:
             return
         attempt = None
         if engine["kind"] == "local":
-            if self.local_models is None or self.local_transcriber is None or not self.local_models.files_present():
+            models, transcriber = self._get_local_audio()
+            if models is None or transcriber is None or not models.files_present():
                 raise MeetingError("Orukeet is not installed. Open Settings > Transcription, download it, then retry, "
                                    "or choose a cloud provider for meetings in Settings > Meetings.")
             self.store.update_job(job["id"], detail="Loading Orukeet")
-            attempt = self.local_transcriber.begin_attempt()
+            attempt = transcriber.begin_attempt()
             decode = attempt.transcribe_timed
             where = "Orukeet on this PC"
         else:
@@ -889,6 +901,8 @@ class MeetingService:
                 samples = audio.concat_chunks(chunks)
 
                 def progress(done, total, new, source=source, done_before=done_before):
+                    if should_stop():
+                        return
                     fraction = min(0.99, (done_before + done) / total_seconds)
                     self.store.update_job(job["id"], progress=fraction,
                                           detail=f"{SOURCE_LABELS.get(source, source)} · {int(done // 60)}:{int(done % 60):02d} of {int(total // 60)}:{int(total % 60):02d}")
@@ -915,6 +929,8 @@ class MeetingService:
     def _after_transcribe(self, meeting_id):
         self._audio_cache.clear()
         latest = self.store.get_meeting(meeting_id)
+        if not latest or meeting_id in self._cancelled:
+            return
         cfg = self.config()
         auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
                 and self.upload_policy() == "allow" and latest and latest["audio_state"] == "kept"
@@ -924,7 +940,7 @@ class MeetingService:
             self._jobs.put(self.store.create_job(
                 meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)}))["id"])
         elif latest and latest['retention'] == 'after_transcription':
-            self.remove_audio(meeting_id)
+            self.sweep_retention()
         if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
             info = self.text_model_info(cfg)
             if not info["remote"] or self.remote_policy() == "allow":
@@ -939,6 +955,8 @@ class MeetingService:
             while self._yield_to() and waited < max_wait and meeting_id not in self._cancelled and not self._closed:
                 time.sleep(0.1)
                 waited += 0.1
+            if meeting_id in self._cancelled or self._closed:
+                return '', [], [], []
             return decode(wav_bytes)
 
         return wrapped
@@ -977,7 +995,7 @@ class MeetingService:
         self.store.update_job(job["id"], detail=f"Asking {info['label'] or info['provider']}", progress=0.2)
         latest = self.store.latest_analysis(meeting_id, "summary")
         summary = None
-        if latest is not None:
+        if latest is not None and latest['input_rev'] == meeting['transcript_rev'] and not latest['include_notes']:
             try:
                 summary = json.loads(latest["content"])
             except ValueError:
@@ -1023,9 +1041,20 @@ class MeetingService:
         removed = []
         for meeting in self.store.list_meetings():
             if self.store.audio_expired(meeting):
-                self.remove_audio(meeting["id"])
+                try:
+                    self.remove_audio(meeting["id"])
+                except MeetingError:
+                    continue  # Active jobs keep their audio until completion.
                 removed.append(meeting["id"])
         return removed
+
+    def _retention_loop(self) -> None:
+        while not self._maintenance_stop.wait(RETENTION_SWEEP_SECONDS):
+            try:
+                self.sweep_retention()
+            except Exception:
+                # Retry on the next sweep if the disk is temporarily unavailable.
+                pass
 
     def export(self, meeting_id: str, fmt: str = "md") -> tuple[str, bytes]:
         detail = self.meeting_detail(meeting_id)
@@ -1048,6 +1077,8 @@ class MeetingService:
         """Stops capture, waits briefly for the job worker and closes the library.
         A worker still busy with a job keeps the database open until the process ends."""
         self._closed = True
+        self._maintenance_stop.set()
+        self._maintenance.join(timeout=2.0)
         self._mic_preview.stop()
         for live in list(self._live.values()):
             live.cancel()
@@ -1062,7 +1093,7 @@ class MeetingService:
         self._worker.join(timeout=2.0)
         for live in list(self._live.values()):
             live.join()
-        if not self._worker.is_alive() and not any(l.alive for l in self._live.values()):
+        if not self._maintenance.is_alive() and not self._worker.is_alive() and not any(l.alive for l in self._live.values()):
             try:
                 self.store.close()
             except Exception:

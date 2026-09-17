@@ -108,6 +108,37 @@ class AnswerTests(unittest.TestCase):
 
 
 class DraftAndExportTests(unittest.TestCase):
+    def test_draft_without_summary_reads_every_section(self):
+        extracted = []
+
+        def chat(system, user, max_tokens):
+            if system == analysis.EXTRACT_SYSTEM:
+                extracted.append(user)
+                return json.dumps({'points': [user], 'decisions': [], 'actions': [], 'questions': []})
+            if system == analysis.SYNTHESIS_SYSTEM:
+                for passage in PASSAGES:
+                    self.assertIn(passage['id'], user)
+                return json.dumps({'overview': 'Includes the final deferred topic.',
+                                   'decisions': [], 'actions': [], 'questions': []})
+            self.assertEqual(system, analysis.DRAFT_SYSTEM)
+            self.assertIn('Includes the final deferred topic.', user)
+            return 'Complete follow-up.'
+
+        result = analysis.draft_followup(None, PASSAGES, SPEAKERS, chat, section_chars=140)
+        self.assertEqual(result, 'Complete follow-up.')
+        self.assertGreater(len(extracted), 1)
+        for passage in PASSAGES:
+            self.assertIn(passage['id'], '\n'.join(extracted))
+
+    def test_short_draft_needs_only_one_call(self):
+        calls = []
+        def chat(system, user, max_tokens):
+            calls.append(user)
+            return 'Draft.'
+        self.assertEqual(analysis.draft_followup(None, PASSAGES[:1], SPEAKERS, chat), 'Draft.')
+        self.assertEqual(len(calls), 1)
+        self.assertIn('p0001', calls[0])
+
     def test_draft_uses_summary_when_present(self):
         summary = {"overview": "o", "decisions": [{"text": "d", "refs": ["p0002"], "status": "decided"}],
                    "actions": [], "questions": []}

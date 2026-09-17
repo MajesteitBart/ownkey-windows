@@ -1,6 +1,6 @@
 import os
 import tempfile
-import time
+import threading
 import unittest
 
 import numpy as np
@@ -131,16 +131,22 @@ class CaptureSessionTests(unittest.TestCase):
 
     def test_dead_source_interrupts_the_meeting(self):
         interruptions = []
+        interrupted = threading.Event()
+        def on_interrupted(session, reason):
+            interruptions.append(reason)
+            interrupted.set()
         session = CaptureSession(self.store, self.meeting["id"], [self.mic], clock=self.clock,
-                                 chunk_samples=16000, on_interrupted=lambda s, reason: interruptions.append(reason))
+                                 chunk_samples=16000, on_interrupted=on_interrupted)
         session.start()
-        self.mic.fail("Microphone unplugged")
-        deadline = time.monotonic() + 3
-        while session.state != "interrupted" and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertEqual(session.state, "interrupted")
-        self.assertEqual(interruptions, ["Microphone unplugged"])
-        self.assertEqual(self.store.get_meeting(self.meeting["id"])["state"], "interrupted")
+        try:
+            self.mic.fail("Microphone unplugged")
+            # State is set before the database writes and callback complete.
+            self.assertTrue(interrupted.wait(3), "Capture did not report the failed source")
+            self.assertEqual(session.summary()["state"], "interrupted")
+            self.assertEqual(interruptions, ["Microphone unplugged"])
+            self.assertEqual(self.store.get_meeting(self.meeting["id"])["state"], "interrupted")
+        finally:
+            session.stop()
 
     def test_stop_is_idempotent_and_start_failure_cleans_up(self):
         self.session.start()
@@ -160,6 +166,25 @@ class CaptureSessionTests(unittest.TestCase):
             session.start()
         self.assertEqual(stopped, [True])
         self.assertEqual(session.state, "idle")
+
+    def test_interruption_callback_does_not_hold_capture_lock(self):
+        read = threading.Event()
+        readers = []
+        observed = []
+        def callback(session, reason):
+            def inspect():
+                session.summary()
+                read.set()
+            reader = threading.Thread(target=inspect, daemon=True)
+            readers.append(reader)
+            reader.start()
+            observed.append(read.wait(1))
+        self.session._on_interrupted = callback
+        self.session.start()
+        self.session.stop('Source failed')
+        for reader in readers:
+            reader.join(1)
+        self.assertEqual(observed, [True], 'Status polling must not deadlock the callback')
 
 
 if __name__ == "__main__":

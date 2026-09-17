@@ -89,6 +89,32 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_jobs(mid), [])
         self.assertIsNone(self.store.get_analysis(summary["id"]))
 
+    def test_deleted_meeting_rejects_late_writes(self):
+        mid = self.store.create_meeting('Synthetic deletion test', {})['id']
+        job = self.store.create_job(mid, 'transcribe')
+        self.store.delete_meeting(mid)
+        passages = [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                     'start': 0., 'end': 1., 'text': 'Synthetic delayed response.'}]
+        self.store.append_passages(mid, passages, 1)
+        self.store.replace_passages(mid, passages, 1)
+        self.store.add_event(mid, 1., 'transcribed')
+        self.store.add_chunk(mid, 'mic', 0, 0, 16000, 'unused.wav')
+        self.store.set_live_options(mid, {})
+        self.store.ensure_speaker(mid, 'mic', 'mic', 'Microphone')
+        self.store.speaker_turn(mid, 'mic', 'mic', 0., True)
+        self.assertFalse(self.store.commit_window(mid, job['id'], 'mic', 0, 16000, 'stop', passages))
+        with self.assertRaises(ValueError):
+            self.store.save_notes(mid, 'Delayed edit')
+        with self.assertRaises(ValueError):
+            self.store.add_analysis(mid, 'answer', provider='test', model='test', input_rev=1,
+                                    include_notes=False, content='Delayed answer', refs=[])
+        with self.assertRaises(ValueError):
+            self.store.create_job(mid, 'summary')
+        for table in ('chunks', 'events', 'speakers', 'passages', 'notes', 'analyses', 'jobs',
+                      'live_sessions', 'transcription_windows', 'speaker_turns'):
+            with self.subTest(table=table):
+                self.assertEqual(self.store._conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0], 0)
+
     def test_reconcile_marks_interrupted_and_drops_missing_chunks(self):
         meeting = self.store.create_meeting("", {})
         mid = meeting["id"]

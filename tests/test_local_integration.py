@@ -103,6 +103,21 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(disk["local_model_directory"], str(manager.path))
         self.assertEqual(service._timeout, 0)
 
+    def test_meetings_follow_selected_model_directory(self):
+        from meetings.service import MeetingService
+        from meetings.store import MeetingStore
+        meetings = MeetingService(MeetingStore(Path(self.directory.name) / 'meetings'),
+            get_config=lambda: self.app.cfg, get_local_audio=self.app._meeting_local_audio)
+        self.addCleanup(meetings.close)
+        previous_models = self.app.local_models
+        manager, transcriber = self.alternate_location()
+        self.app.apply_settings({**self.changes, 'local_model_directory': str(manager.path)})
+        self.assertEqual(meetings._get_local_audio(), (manager, transcriber))
+        # Removing the retired model cannot make the selected location unavailable.
+        (previous_models.path / 'tokens.txt').unlink()
+        self.assertTrue(meetings.local_model_info()['installed'])
+        self.assertEqual(meetings.local_model_info()['state'], 'Loaded')
+
     def test_failed_folder_save_keeps_previous_model_active(self):
         self.app.apply_settings(self.changes)
         previous = self.app.local_transcriber

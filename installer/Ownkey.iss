@@ -40,7 +40,7 @@ WizardSmallImageFile=assets\wizard-small-100.bmp,assets\wizard-small-150.bmp,ass
 UninstallDisplayIcon={app}\ownkey.ico
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
-VersionInfoVersion=0.5.0.0
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Ownkey for Windows installer
 VersionInfoCopyright=Copyright (C) 2026 Ownkey
@@ -93,4 +93,3 @@ begin
         DelTree(ModelDirectory, True, True, True);
   end;
 end;
-

@@ -79,6 +79,8 @@ Recognition failures preserve audio, completed passages and a durable retry curs
 
 Delete and shutdown cancel live work before releasing resources. Committing checks that the meeting and running job still exist, preventing late results from recreating a deleted meeting. Model attempts close on completion and failure. Audio removal is blocked while transcription or speaker processing still needs it. Automatic removal follows successful processing, including a pending automatic batch speaker pass.
 
+Retention is checked at startup, after audio jobs finish and every minute while Ownkey runs. A busy meeting does not prevent other expired recordings from being removed. Deletion rejects late writes from batch transcription and text analysis as well as live processing. New local recognition jobs follow the model directory selected in Settings; existing attempts keep their current model until they finish.
+
 Notes and corrections remain usable during recording. Polling defers full rendering while an input is focused, preserves earlier scroll positions, and follows new text only when already near the bottom. Status distinguishes listening, transcription, catching up, pause, finalization and failure. Recording does not show a misleading completion percentage.
 
 HTTP control actions consume their JSON bodies before connection reuse. This fixes malformed polling requests found during Pause/Resume browser testing. A new token-bearing meeting URL also takes precedence over a stale cookie from an earlier process.

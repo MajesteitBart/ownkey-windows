@@ -142,6 +142,8 @@ def transcribe_track(samples: np.ndarray, decode, *, source: str, first_index: i
         new: list[dict] = []
         if window.size >= rate * 0.3 and audio.rms_db(window) > SILENT_WINDOW_DB:
             text, tokens, timestamps, durations = decode(audio.wav_bytes(window, rate))
+            if should_stop is not None and should_stop():
+                break
             if tokens:
                 new = tokens_to_passages(tokens, timestamps, durations, offset=offset, window_end=window_end)
             elif text.strip():

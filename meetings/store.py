@@ -268,6 +268,8 @@ class MeetingStore:
     # ── chunks and events ──────────────────────────────────────────
     def add_chunk(self, meeting_id: str, source: str, seq: int, start_sample: int, n_samples: int, path: str) -> None:
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                return
             self._conn.execute(
                 "INSERT OR REPLACE INTO chunks(meeting_id, source, seq, start_sample, n_samples, path)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
@@ -313,6 +315,8 @@ class MeetingStore:
 
     def set_live_options(self, meeting_id: str, options: dict) -> None:
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                return
             self._conn.execute('INSERT OR REPLACE INTO live_sessions VALUES (?, ?)',
                                (meeting_id, json.dumps(options)))
 
@@ -373,6 +377,8 @@ class MeetingStore:
 
     def add_event(self, meeting_id: str, at: float, kind: str, detail: str = "") -> None:
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                return
             self._conn.execute(
                 "INSERT INTO events(meeting_id, at, wall, kind, detail) VALUES (?, ?, ?, ?, ?)",
                 (meeting_id, float(at), self._clock(), kind, detail),
@@ -392,6 +398,8 @@ class MeetingStore:
     def save_notes(self, meeting_id: str, content: str) -> dict:
         now = self._clock()
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                raise ValueError("This meeting no longer exists.")
             self._conn.execute(
                 "INSERT INTO notes(meeting_id, content, rev, updated_at) VALUES (?, ?, 1, ?)"
                 " ON CONFLICT(meeting_id) DO UPDATE SET content = excluded.content, rev = notes.rev + 1,"
@@ -454,6 +462,8 @@ class MeetingStore:
     def replace_passages(self, meeting_id: str, passages: list[dict], rev: int) -> None:
         """Store recognition output as the base revision, keeping corrections by id."""
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                return
             existing, by_content = {}, {}
             for r in self._conn.execute("SELECT * FROM passages WHERE meeting_id = ?", (meeting_id,)):
                 existing[r["id"]] = dict(r)
@@ -481,6 +491,8 @@ class MeetingStore:
     def append_passages(self, meeting_id: str, passages: list[dict], rev: int) -> None:
         """Add passages as a transcription job produces them, in order."""
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                return
             position = self._conn.execute(
                 "SELECT COALESCE(MAX(position), -1) + 1 FROM passages WHERE meeting_id = ?", (meeting_id,)).fetchone()[0]
             for offset, passage in enumerate(passages):
@@ -547,6 +559,8 @@ class MeetingStore:
                      state: str = "done", error: str = "") -> dict:
         analysis_id = new_id("a")
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                raise ValueError("This meeting no longer exists.")
             self._conn.execute(
                 "INSERT INTO analyses(id, meeting_id, kind, created_at, provider, model, input_rev, include_notes,"
                 " question, content, refs, state, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -588,6 +602,8 @@ class MeetingStore:
         job_id = new_id("j")
         now = self._clock()
         with self._tx():
+            if not self.get_meeting(meeting_id):
+                raise ValueError("This meeting no longer exists.")
             self._conn.execute(
                 "INSERT INTO jobs(id, meeting_id, kind, state, progress, detail, error, attempts, created_at, updated_at)"
                 " VALUES (?, ?, ?, 'queued', 0, ?, '', 0, ?, ?)",

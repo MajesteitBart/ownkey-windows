@@ -309,12 +309,14 @@ class CaptureSession:
             self.reason = reason
             self.store.add_event(self.meeting_id, elapsed, "interrupted" if interrupted else "stop", reason)
             self.store.update_meeting(self.meeting_id, state=self.state, elapsed=elapsed)
-            if interrupted and self._on_interrupted is not None:
-                try:
-                    self._on_interrupted(self, reason)
-                except Exception:
-                    pass
-            return self.summary()
+            summary = self.summary()
+        # The callback takes the service lock, whose callers may need our lock.
+        if interrupted and self._on_interrupted is not None:
+            try:
+                self._on_interrupted(self, reason)
+            except Exception:
+                pass
+        return summary
 
     def summary(self) -> dict:
         with self._lock:

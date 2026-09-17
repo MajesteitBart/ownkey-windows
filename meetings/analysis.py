@@ -227,14 +227,16 @@ def answer_question(question: str, passages: list[dict], speakers: list[dict], c
 def draft_followup(summary: dict | None, passages: list[dict], speakers: list[dict], chat, *,
                    section_chars: int = SECTION_CHARS) -> str:
     names = {s["id"]: s["name"] for s in speakers}
+    if not summary:
+        parts = sections(transcript_lines(passages, names), section_chars)
+        if len(parts) > 1:
+            summary = generate_summary(passages, speakers, chat, section_chars=section_chars)
     if summary:
         material = "Summary JSON:\n" + json.dumps(summary, ensure_ascii=False)
         times = {p["id"]: format_time(p["start"]) for p in passages}
         material += "\n\nPassage times: " + ", ".join(f"{k}={v}" for k, v in times.items() if k in summary_refs(summary))
     else:
-        lines = transcript_lines(passages, names)
-        parts = sections(lines, section_chars)
-        material = "Transcript (first section):\n" + parts[0] if parts else ""
+        material = "Transcript:\n" + parts[0] if parts else ""
     if not material.strip():
         raise ValueError("There is nothing to draft from yet.")
     text = chat(DRAFT_SYSTEM, material, DRAFT_MAX_TOKENS)
