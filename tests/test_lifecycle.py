@@ -134,6 +134,26 @@ class SettingsLifecycleTests(unittest.TestCase):
         root.update()
         self.assertEqual(str(dropdown.cget("cursor")), "hand2")
 
+    def test_dropdowns_keep_their_chevron_when_settings_reopens(self):
+        import gc
+        root = self.app._ui_root
+        self.app._settings.open()
+        root.update()
+        bindings = root.bind_class("TCombobox", "<Enter>")
+        self.app._settings._on_close()
+        gc.collect()
+        self.app._settings.open()
+        self.app._settings.show_page("transcription")
+        root.update()
+        names = root.tk.call("image", "names")
+        for image in root._ownkey_chevrons.values():
+            self.assertIn(str(image), names, "the chevron image died with the first window")
+        dropdown = self._visible_dropdowns()[0]
+        self.assertEqual(dropdown.identify(dropdown.winfo_width() - 14, dropdown.winfo_height() // 2),
+                         "Ownkey.Combobox.chevron")
+        self.assertEqual(root.bind_class("TCombobox", "<Enter>"), bindings, "class bindings must not pile up")
+        self.assertEqual(self.errors, [])
+
     def test_close_during_model_refresh_does_not_touch_destroyed_widgets(self):
         with patch.object(ownkey, "list_available_models", side_effect=lambda *a: (time.sleep(.1) or ["test"])):
             self.app._settings.open()

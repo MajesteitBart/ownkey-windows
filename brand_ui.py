@@ -105,39 +105,39 @@ def _style_combobox(root: tk.Misc, style: ttk.Style, type_: Type) -> None:
               bordercolor=[("disabled", LINE), ("focus", ORANGE), ("hover", ASH)],
               arrowcolor=[("disabled", LINE)],
               selectbackground=[("readonly", SLATE)], selectforeground=[("readonly", BONE)])
-    chevron = ((9, 6), (14, 11), (19, 6))
-    images = {name: smooth_image(root, 28, 17, background, strokes=[(chevron, color, 1.7)])
-              for name, color, background in (("normal", ASH, SLATE), ("active", BONE, SLATE),
-                                              ("disabled", HAIRLINE, GRAPHITE))}
-    if all(images.values()):
-        root._ownkey_chevrons = images  # the element only borrows the images
-        if "Ownkey.Combobox.chevron" not in style.element_names():
+    # Settings is a new Toplevel on every open, but elements, class bindings and
+    # the option database belong to the interpreter. Set those up once, and keep
+    # the chevron images on the Tk root: the element only borrows them, and an
+    # image dies with the last Python reference to it.
+    owner = root._root()
+    if not getattr(owner, "_ownkey_combobox_ready", False):
+        chevron = ((9, 6), (14, 11), (19, 6))
+        images = {name: smooth_image(owner, 28, 17, background, strokes=[(chevron, color, 1.7)])
+                  for name, color, background in (("normal", ASH, SLATE), ("active", BONE, SLATE),
+                                                  ("disabled", HAIRLINE, GRAPHITE))}
+        if all(images.values()) and "Ownkey.Combobox.chevron" not in style.element_names():
+            owner._ownkey_chevrons = images
             style.element_create("Ownkey.Combobox.chevron", "image", images["normal"],
                                  ("disabled", images["disabled"]), ("pressed", images["active"]),
                                  ("hover", images["active"]), ("focus", images["active"]), sticky="")
+        # A Tcl script, so no Python callback is registered per window.
+        owner.tk.call("bind", "TCombobox", "<Enter>",
+                      "+%W configure -cursor [expr {[%W instate disabled] ? {arrow} : {hand2}}]")
+        # The page scrolls under the pointer. A wheel turn must not also change
+        # the value of whatever field happens to be there.
+        for widget_class in ("TCombobox", "TSpinbox"):
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                owner.unbind_class(widget_class, sequence)
+        for option, value in (("background", SLATE), ("foreground", BONE), ("selectBackground", ORANGE),
+                              ("selectForeground", KEY), ("font", font_option(type_.body)), ("borderWidth", 6),
+                              ("highlightThickness", 0), ("relief", "flat"), ("activeStyle", "none")):
+            owner.option_add(f"*TCombobox*Listbox.{option}", value)
+        owner._ownkey_combobox_ready = True
+    if "Ownkey.Combobox.chevron" in style.element_names():
         style.layout("TCombobox", [("Combobox.field", {"sticky": "nswe", "children": [
             ("Ownkey.Combobox.chevron", {"side": "right", "sticky": "ns"}),
             ("Combobox.padding", {"sticky": "nswe", "children": [("Combobox.textarea", {"sticky": "nswe"})]}),
         ]})])
-
-    def cursor(event):
-        widget = event.widget
-        try:
-            widget.configure(cursor="arrow" if widget.instate(["disabled"]) else "hand2")
-        except (tk.TclError, AttributeError):
-            pass
-
-    root.bind_class("TCombobox", "<Enter>", cursor, add="+")
-    # The page scrolls under the pointer. A wheel turn must not also change the
-    # value of whatever field happens to be there.
-    for widget_class in ("TCombobox", "TSpinbox"):
-        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            root.unbind_class(widget_class, sequence)
-
-    for option, value in (("background", SLATE), ("foreground", BONE), ("selectBackground", ORANGE),
-                          ("selectForeground", KEY), ("font", font_option(type_.body)), ("borderWidth", 6),
-                          ("highlightThickness", 0), ("relief", "flat"), ("activeStyle", "none")):
-        root.option_add(f"*TCombobox*Listbox.{option}", value)
     style.configure("ComboboxPopdownFrame", relief="solid", borderwidth=1, bordercolor=HAIRLINE,
                     lightcolor=HAIRLINE, darkcolor=HAIRLINE, background=SLATE)
     # The scrollbar inside the list uses the default style.
