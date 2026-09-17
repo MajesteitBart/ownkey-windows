@@ -163,6 +163,7 @@
 
   function renderMain() {
     const main = $('#main');
+    setTimeout(pollMicPreview, 0);  // starts the meter on the New meeting sheet, releases the microphone anywhere else
     if (state.view === 'new') { main.innerHTML = renderNew(); bindNew(); return; }
     if (state.view === 'meeting' && state.detail) { main.innerHTML = renderMeeting(); bindMeeting(); return; }
     const status = state.status || {};
@@ -190,8 +191,9 @@
           <button data-src="system" class="${!f.mic && f.system ? 'is-on' : ''}">${ico('volume', 14)}System audio</button>
         </div>
         <div class="srcgrid" style="margin-top:12px">
-          <div class="card srcbox ${f.mic ? '' : 'off'}"><div class="h">${ico('mic', 15)}Microphone</div>
+          <div class="card srcbox ${f.mic ? '' : 'off'}"><div class="h">${ico('mic', 15)}Microphone<span class="mic-live" data-mic-live title="Live input from the selected microphone. Nothing is kept until you press Start.">${f.mic ? meter((state.micLast || {}).level || 0, 8) : ''}</span></div>
             <div class="field sm">${ico('mic', 13)}<select data-mic-device ${f.mic ? '' : 'disabled'}>${options(d.inputs, f.mic_device, 'Default microphone')}</select></div>
+            <p class="mic-note" data-mic-note hidden></p>
             <p>Stored as its own track, labelled Microphone. You can confirm it as “You” after the meeting.</p>
             <label class="check"><input type="checkbox" data-mic-shared ${f.mic_shared ? 'checked' : ''} ${f.mic ? '' : 'disabled'}>Several people share this microphone</label>
             <p class="hint">Speaker labels then cover this track too, so people in the room get their own names.</p></div>
@@ -220,7 +222,7 @@
     const f = state.form;
     $('[data-title]').oninput = (e) => { f.title = e.target.value; };
     $$('[data-src]').forEach((b) => b.onclick = () => { const v = b.dataset.src; f.mic = v !== 'system'; f.system = v !== 'mic'; render(); });
-    $('[data-mic-device]').onchange = (e) => { f.mic_device = e.target.value; };
+    $('[data-mic-device]').onchange = (e) => { f.mic_device = e.target.value; state.micQuietSince = 0; pollMicPreview(); };
     $('[data-mic-shared]').onchange = (e) => { f.mic_shared = e.target.checked; };
     $('[data-system-device]').onchange = (e) => { f.system_device = e.target.value; };
     $$('[data-retention]').forEach((b) => b.onclick = () => { f.retention = b.dataset.retention; render(); });
@@ -238,6 +240,45 @@
       } catch (e) { toast(e.message); button.disabled = false; }
     };
   }
+
+  // Live input meter in the Microphone card. The backend opens the selected
+  // microphone for the meter only, keeps nothing, and closes it when these
+  // polls stop: leaving the sheet, hiding the window, starting a recording.
+  async function pollMicPreview() {
+    clearTimeout(state.micTimer);
+    const wanted = state.view === 'new' && state.form.mic && !(state.status || {}).capturing && document.visibilityState === 'visible';
+    if (!wanted) {
+      if (state.micPreviewOn) { state.micPreviewOn = false; del('/api/preview/mic').catch(() => {}); }
+      return;
+    }
+    if (state.micBusy) return;
+    state.micBusy = true;
+    try {
+      const device = state.form.mic_device;
+      const r = await get(`/api/preview/mic?device=${encodeURIComponent(device)}`);
+      state.micPreviewOn = true;
+      if (device === state.form.mic_device) paintMicPreview(r);
+    } catch (e) { paintMicPreview({ level: 0, error: e.message }); }
+    state.micBusy = false;
+    state.micTimer = setTimeout(pollMicPreview, 120);
+  }
+  function paintMicPreview(r) {
+    const live = $('[data-mic-live]'), note = $('[data-mic-note]');
+    state.micLast = r;  // a re-render of the sheet starts from the last reading, not from zero
+    if (!live || !note) return;
+    live.innerHTML = meter(r.level, 8);
+    const now = Date.now();
+    if (r.level > 0.04 || r.error) state.micQuietSince = 0; else if (!state.micQuietSince) state.micQuietSince = now;
+    const quiet = state.micQuietSince && now - state.micQuietSince > 4000;
+    const text = r.error ? `This microphone could not be opened: ${r.error}` : quiet ? 'No input from this microphone yet. Say something, or pick another one.' : '';
+    note.hidden = !text; note.textContent = text; note.classList.toggle('bad', !!r.error);
+  }
+  document.addEventListener('visibilitychange', pollMicPreview);
+  // Closing or reloading the window releases the microphone at once; the backend
+  // would also close it by itself a few seconds after the last poll.
+  window.addEventListener('pagehide', () => {
+    if (state.micPreviewOn) fetch('/api/preview/mic', { method: 'DELETE', keepalive: true, headers: { 'X-Ownkey-Token': TOKEN } }).catch(() => {});
+  });
 
   // ── meeting view ─────────────────────────────────────────────
   async function openMeeting(id, tab) {

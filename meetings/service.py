@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from . import analysis, audio, capture, diarization, export
 from .capture import CaptureSession, MIC, SYSTEM, SOURCE_LABELS
+from .preview import MicPreview
 from .store import MeetingStore, RETENTION_CHOICES
 from .transcription import merge_tracks, transcribe_track
 
@@ -73,6 +74,7 @@ class MeetingService:
         self.notify = notify or (lambda message: None)
         self.open_settings = open_settings or (lambda: None)
         self._source_factory = source_factory or self._default_sources
+        self._mic_preview = MicPreview(self._preview_source)
         self._clock = clock
         self._lock = threading.RLock()
         self._session: CaptureSession | None = None
@@ -277,10 +279,30 @@ class MeetingService:
             sources.append(capture.SystemAudioSource(device_id=wants.get("system_device") or None))
         return sources
 
+    def _preview_source(self, device):
+        sources = self._source_factory({"mic": True, "system": False, "mic_device": device, "system_device": None})
+        source = next((item for item in sources if item.label == MIC), None)
+        if source is None:
+            raise MeetingError("No microphone is available.")
+        return source
+
+    def mic_preview(self, device=None) -> dict:
+        """Live input level for the New meeting sheet, so the right microphone is
+        picked before Start. The audio becomes a number and is dropped; the
+        preview closes the microphone when the window stops asking."""
+        if self.is_capturing():
+            self._mic_preview.stop()  # the recording has its own meter
+            return {"active": False, "level": 0.0, "error": ""}
+        return self._mic_preview.read(device)
+
+    def stop_mic_preview(self) -> None:
+        self._mic_preview.stop()
+
     def start_meeting(self, title: str = "", *, mic: bool = True, system: bool = True, mic_device=None,
                       system_device=None, retention: str | None = None, mic_shared: bool = False) -> dict:
         if not mic and not system:
             raise MeetingError("Choose at least one source.")
+        self._mic_preview.stop()  # hand the microphone over to the recording
         with self._lock:
             if self.is_capturing():
                 raise MeetingError("A meeting is already recording. Stop it first.")
@@ -892,6 +914,7 @@ class MeetingService:
         """Stops capture, waits briefly for the job worker and closes the library.
         A worker still busy with a job keeps the database open until the process ends."""
         self._closed = True
+        self._mic_preview.stop()
         with self._lock:
             session = self._session
             if session is not None and stop_recording:

@@ -10,6 +10,16 @@ usable slice, not the whole spec.
   window. Microphone, system audio or both, with device pickers, a retention
   choice and the "let everyone know you are recording" reminder. Nothing is
   written before Start.
+- **Live input meter before Start.** The Microphone card on the New meeting
+  sheet shows the level of the selected microphone, in the same style as
+  the meters of a running session, so a wrong or muted device shows before
+  the meeting does. The backend opens the microphone for this only
+  (`GET /api/preview/mic?device=`), turns each block into one number and
+  drops it: nothing is kept and nothing is written. The preview stops when
+  the sheet is left, the window is hidden or closed, a recording starts, or
+  no poll has arrived for 2.5 seconds. A microphone that cannot be opened
+  shows its error in the card, and four seconds of silence shows a hint.
+  Windows shows its microphone-in-use indicator while the sheet is open.
 - **Ownkey's own window.** The meeting interface is a local page on 127.0.0.1
   with a per-process token, shown in a window of the overlay process (Tauri,
   WebView2): title bar "Ownkey Meetings", its own taskbar entry, no address
@@ -118,7 +128,7 @@ usable slice, not the whole spec.
 
 ## Verified on this machine
 
-- 220 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
+- 228 automated tests (`py -m unittest discover -s tests`): store, chunk writer,
   capture session (timeline, pause, padding, overrun, dead source), windowing
   and passage building, analysis prompts and citation validation, export,
   service jobs, HTTP API, tray integration, config normalization.
@@ -176,15 +186,15 @@ usable slice, not the whole spec.
 Taken from the real interface in `assets/readme/`, with the development
 harness feeding synthetic speech clips as the microphone and call audio, so
 the transcripts repeat two test sentences. Everything else in them is what
-the app does today. The transcript image is the native window; the other
-three are the same page captured without a window frame.
+the app does today. The transcript and New meeting images are the native
+window; the other two are the same page captured without a window frame.
 
 | File | What it shows |
 |---|---|
 | `meetings-recording.png` | A meeting recording both tracks with live meters, Pause and Stop, and notes in My thoughts |
 | `meetings-transcript.png` | The Ownkey Meetings window itself, captured from the overlay process: a transcript after speaker labels on a shared microphone and call audio, Speaker 1 to 3 to confirm, search, playback, retention |
 | `meetings-summary.png` | Summary with the remote-model line, two questions (one refused for lack of a passage) and a follow-up draft |
-| `meetings-new.png` | New meeting: sources, devices, the shared-microphone option, readiness rows and retention |
+| `meetings-new.png` | New meeting in the Ownkey Meetings window: sources, devices with the live input meter, the shared-microphone option, readiness rows and retention |
 
 ## Development harness
 

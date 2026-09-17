@@ -255,6 +255,9 @@ svg { display: block; }
 .srcbox.off { opacity: .5; }
 .srcbox .h { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .srcbox .h svg { width: 15px; height: 15px; color: var(--ink-2); }
+.srcbox .h .mic-live { margin-left: auto; display: inline-flex; align-items: center; }
+.srcbox p.mic-note { color: var(--amber); }
+.srcbox p.mic-note.bad { color: var(--red); }
 .srcbox p { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
 .startbar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 14px; margin: 28px -32px -48px; padding: 14px 32px; background: var(--page); border-top: 1px solid var(--line); }
 .startbar .remind { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }

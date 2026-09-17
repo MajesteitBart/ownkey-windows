@@ -68,6 +68,8 @@ class MeetingServer:
 ROUTES = [
     ("GET", r"/api/status", "status"),
     ("GET", r"/api/devices", "devices"),
+    ("GET", r"/api/preview/mic", "mic_preview"),
+    ("DELETE", r"/api/preview/mic", "mic_preview_stop"),
     ("GET", r"/api/meetings", "list_meetings"),
     ("POST", r"/api/meetings", "create_meeting"),
     ("GET", r"/api/meetings/(?P<mid>[\w-]+)", "meeting"),
@@ -193,6 +195,14 @@ class _Handler(BaseHTTPRequestHandler):
         from .capture import list_devices
 
         self._json(HTTPStatus.OK, list_devices())
+
+    def h_mic_preview(self, query):
+        device = (query.get("device") or [""])[0].strip()
+        self._json(HTTPStatus.OK, self.owner.service.mic_preview(int(device) if device.isdigit() else None))
+
+    def h_mic_preview_stop(self, query):
+        self.owner.service.stop_mic_preview()
+        self._json(HTTPStatus.OK, {"active": False})
 
     def h_list_meetings(self, query):
         self._json(HTTPStatus.OK, {"meetings": self.owner.service.list_meetings()})
