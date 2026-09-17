@@ -478,7 +478,7 @@ class ServiceTests(unittest.TestCase):
                     include_notes=notes, content='{"overview": "Old summary or private notes"}', refs=[])
                 job = self.store.create_job(mid, 'draft')
                 with patch('meetings.service.analysis.draft_followup', return_value='Synthetic draft') as draft:
-                    self.service._run_draft(job)
+                    self.service._run_draft(dict(job, _config=self.service._job_config(self.cfg)))
                 self.assertIsNone(draft.call_args.args[0])
 
 
@@ -544,7 +544,7 @@ class ShutdownTests(unittest.TestCase):
                             'start': 0, 'end': 1, 'text': 'Synthetic saved passage.'}], 1)
                         store.correct_passage(mid, 'p0001', 'Synthetic saved correction.')
                     job = store.create_job(mid, kind)
-                    service._jobs.put(job['id'])
+                    service._enqueue(job, service.config())
                     closer = None
                     try:
                         self.assertTrue(started.wait(3))
@@ -609,6 +609,27 @@ class ServerTests(unittest.TestCase):
         data = response.read()
         conn.close()
         return response.status, response.getheaders(), data
+
+    def test_audio_http_streams_full_suffix_open_and_invalid_ranges(self):
+        from meetings import audio
+        mid = self.store.create_meeting('Synthetic range test', {'mic': {}})['id']
+        samples = np.arange(16000, dtype=np.int16)
+        path = self.store.audio_dir(mid, MIC) / 'test.wav'
+        audio.write_wav(path, samples)
+        self.store.add_chunk(mid, MIC, 0, 0, len(samples), str(path))
+        expected = audio.wav_bytes(samples)
+        for value, status, body in ((None, 200, expected), ('bytes=-7', 206, expected[-7:]),
+                                    ('bytes=43-50', 206, expected[43:51]),
+                                    ('bytes=32040-', 206, expected[32040:]),
+                                    ('bytes=10-999999', 206, expected[10:]),
+                                    ('bytes=999999-', 416, b''), ('bytes=-0', 416, b''),
+                                    ('bytes=10-5', 416, b''), ('bytes=nonsense', 416, b'')):
+            with self.subTest(value=value), patch.object(self.service, 'audio_wav', side_effect=AssertionError('Whole track')):
+                actual, headers, data = self.request('GET', f'/api/meetings/{mid}/audio/mic.wav',
+                                                     headers={'Range': value} if value else {})
+                self.assertEqual(actual, status)
+                self.assertEqual(data, body)
+                self.assertEqual(int(dict(headers)['Content-Length']), len(body))
 
     def test_token_gate_static_and_api_flow(self):
         status, _headers, body = self.request("GET", "/api/status", token=False)

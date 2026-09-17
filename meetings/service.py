@@ -6,6 +6,7 @@ the tray both talk to this object; nothing here depends on a window.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import queue
@@ -91,7 +92,6 @@ class MeetingService:
         self._stream_factory = stream_factory
         self._cancelled: set[str] = set()
         self._running_job: dict | None = None
-        self._audio_cache: dict[tuple, bytes] = {}
         self._closed = False
         self.interrupted_on_start = self.store.reconcile_on_start()
         self._jobs: queue.Queue = queue.Queue()
@@ -110,6 +110,17 @@ class MeetingService:
         cfg = dict(DEFAULT_MEETING_CONFIG)
         cfg.update(self._get_config() or {})
         return cfg
+
+    def _job_config(self, cfg: dict) -> dict:
+        """Freeze the approved provider and credentials in memory, never in SQLite."""
+        snapshot = copy.deepcopy(cfg)
+        snapshot['audio_api_key'] = self._get_audio_key(cfg)
+        snapshot['rewrite_api_key'] = self._get_rewrite_key(cfg)
+        snapshot['pyannote_api_key'] = self.pyannote_key(cfg)
+        return snapshot
+
+    def _enqueue(self, job: dict, cfg: dict) -> None:
+        self._jobs.put((job['id'], self._job_config(cfg)))
 
     def remote_policy(self) -> str:
         return "allow" if self.config().get("meetings_remote_policy") == "allow" else "ask"
@@ -412,7 +423,6 @@ class MeetingService:
                 raise MeetingError("Nothing is recording.")
             summary = session.stop()
             self._session, self._session_meeting = None, None
-        self._audio_cache.clear()
         self._capture_changed()
         if summary["state"] == "stopped":
             if meeting_id in self._live:
@@ -562,14 +572,8 @@ class MeetingService:
         if live:
             live.join()
             self._live.pop(meeting_id, None)
+        self._remove_directory(self.store.meeting_dir(meeting_id))
         self.store.delete_meeting(meeting_id)
-        self._audio_cache = {k: v for k, v in self._audio_cache.items() if k[0] != meeting_id}
-        directory = self.store.meeting_dir(meeting_id)
-        for _attempt in range(5):
-            shutil.rmtree(directory, ignore_errors=True)
-            if not directory.exists():
-                break
-            time.sleep(0.2)
 
     # ── jobs ───────────────────────────────────────────────────────
     def transcribe(self, meeting_id: str, *, remote_ok: bool = False) -> dict:
@@ -585,25 +589,26 @@ class MeetingService:
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] == "transcribe":
                 return job
-        engine = self.transcription_engine()
+        cfg = self._job_config(self.config())
+        engine = self.transcription_engine(cfg)
         if engine["kind"] == "cloud":
             if not engine["configured"]:
                 raise MeetingError(f"{engine['label']} is not set up for meeting transcription. "
                                    "Check the key, endpoint and model in Settings > Meetings, or pick Orukeet.")
-            if engine["remote"] and not remote_ok and self.transcription_policy() != "allow":
+            if engine["remote"] and not remote_ok and cfg.get("meetings_transcription_policy") != "allow":
                 raise ConsentRequired(self.transcription_disclosure(engine))
         job = self.store.create_job(meeting_id, "transcribe", "Waiting for the model")
         if self.store.live_options(meeting_id) is not None:
-            self._start_live(meeting_id, self.config(), engine, job=job)
+            self._start_live(meeting_id, cfg, engine, job=job)
             return job
-        self._jobs.put(job["id"])
+        self._enqueue(job, cfg)
         return job
 
     def _start_live(self, meeting_id, cfg, engine, *, session=None, speaker_sources=(), job=None):
         from .streaming import LiveSpeakerStream
 
         job = job or self.store.create_job(meeting_id, 'transcribe', 'Listening for a pause')
-        cfg = dict(cfg)
+        cfg = self._job_config(cfg)
         def decoder_factory():
             if engine['kind'] == 'local':
                 models, transcriber = self._get_local_audio()
@@ -644,36 +649,38 @@ class MeetingService:
         live.start()
 
     def summarize(self, meeting_id: str, *, include_notes: bool = False, remote_ok: bool = False) -> dict:
-        self._check_analysis_allowed(remote_ok, include_notes=include_notes)
+        cfg = self._job_config(self.config())
+        self._check_analysis_allowed(remote_ok, cfg=cfg, include_notes=include_notes)
         if not self.store.list_passages(meeting_id):
             raise MeetingError("Transcribe the meeting first.")
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] == "summary":
                 return job
         job = self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": bool(include_notes)}))
-        self._jobs.put(job["id"])
+        self._enqueue(job, cfg)
         return job
 
     def draft(self, meeting_id: str, *, remote_ok: bool = False) -> dict:
-        self._check_analysis_allowed(remote_ok)
+        cfg = self._job_config(self.config())
+        self._check_analysis_allowed(remote_ok, cfg=cfg)
         if not self.store.list_passages(meeting_id):
             raise MeetingError("Transcribe the meeting first.")
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] == "draft":
                 return job
         job = self.store.create_job(meeting_id, "draft")
-        self._jobs.put(job["id"])
+        self._enqueue(job, cfg)
         return job
 
     def ask(self, meeting_id: str, question: str, *, include_notes: bool = False, remote_ok: bool = False) -> dict:
-        self._check_analysis_allowed(remote_ok, include_notes=include_notes)
+        cfg = self._job_config(self.config())
+        self._check_analysis_allowed(remote_ok, cfg=cfg, include_notes=include_notes)
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
         passages = self.store.list_passages(meeting_id)
         if not passages:
             raise MeetingError("Transcribe the meeting first.")
-        cfg = self.config()
         info = self.text_model_info(cfg)
         notes = self.store.get_notes(meeting_id)["content"] if include_notes else None
         try:
@@ -690,11 +697,12 @@ class MeetingService:
             state="done" if result["answerable"] else "unanswerable")
         return row
 
-    def _check_analysis_allowed(self, remote_ok: bool, *, include_notes: bool = False) -> None:
-        info = self.text_model_info()
+    def _check_analysis_allowed(self, remote_ok: bool, *, include_notes: bool = False, cfg: dict | None = None) -> None:
+        cfg = cfg if cfg is not None else self.config()
+        info = self.text_model_info(cfg)
         if not info["configured"]:
             raise MeetingError("No text model is configured. Open Settings > Rewriting and choose a provider.")
-        if info["remote"] and not remote_ok and self.remote_policy() != "allow":
+        if info["remote"] and not remote_ok and cfg.get("meetings_remote_policy") != "allow":
             raise ConsentRequired(self.disclosure(info, include_notes=include_notes))
 
     def disclosure(self, info: dict | None = None, *, include_notes: bool = False) -> dict:
@@ -752,20 +760,21 @@ class MeetingService:
             raise MeetingError("The audio was removed, so speakers cannot be labelled.")
         if not self.store.list_passages(meeting_id):
             raise MeetingError("Transcribe the meeting first.")
-        if not self.speaker_labels_info()["configured"]:
+        cfg = self._job_config(self.config())
+        if not self.speaker_labels_info(cfg)["configured"]:
             raise MeetingError("Speaker labels need a pyannoteAI key. Add one in Settings > Meetings.")
         available = self.speaker_tracks_available(meeting_id)
         wanted = [str(t) for t in (tracks or [])] or self._speaker_targets(meeting_id, meeting)
         targets = [source for source in (MIC, SYSTEM) if source in wanted and source in available]
         if not targets:
             raise MeetingError("No audio track to label." if not available else "Choose at least one recorded track.")
-        if not remote_ok and self.upload_policy() != "allow":
+        if not remote_ok and cfg.get("meetings_upload_policy") != "allow":
             raise ConsentRequired(self.upload_disclosure(targets))
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] in ("speakers", "transcribe"):
                 return job
         job = self.store.create_job(meeting_id, "speakers", json.dumps({"tracks": targets}))
-        self._jobs.put(job["id"])
+        self._enqueue(job, cfg)
         return job
 
     def _run_speakers(self, job: dict) -> bool | None:
@@ -773,7 +782,7 @@ class MeetingService:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             return
-        cfg = self.config()
+        cfg = job['_config']
         client = self._diarizer_factory(cfg)
         targets = []
         try:
@@ -825,12 +834,13 @@ class MeetingService:
     def _worker_loop(self) -> None:
         while not self._closed:
             try:
-                job_id = self._jobs.get(timeout=0.5)
+                job_id, cfg = self._jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
             job = self.store.get_job(job_id)
             if job is None or job["state"] != "queued":
                 continue
+            job["_config"] = cfg
             if self._closed:
                 self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
                 continue
@@ -875,7 +885,7 @@ class MeetingService:
 
     def _run_transcribe(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
-        cfg = self.config()
+        cfg = job['_config']
         engine = self.transcription_engine(cfg)
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
@@ -948,24 +958,23 @@ class MeetingService:
         return True
 
     def _after_transcribe(self, meeting_id):
-        self._audio_cache.clear()
         latest = self.store.get_meeting(meeting_id)
         if not latest or meeting_id in self._cancelled or self._closed:
             return
-        cfg = self.config()
+        cfg = self._job_config(self.config())
         auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
-                and self.upload_policy() == "allow" and latest and latest["audio_state"] == "kept"
+                and cfg.get("meetings_upload_policy") == "allow" and latest and latest["audio_state"] == "kept"
                 and self._speaker_targets(meeting_id, latest)
                 and not (self.store.live_options(meeting_id) or {}).get('speakers'))
         if auto_speakers:
-            self._jobs.put(self.store.create_job(
-                meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)}))["id"])
+            self._enqueue(self.store.create_job(
+                meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)})), cfg)
         elif latest and latest['retention'] == 'after_transcription':
             self.sweep_retention()
         if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
             info = self.text_model_info(cfg)
-            if not info["remote"] or self.remote_policy() == "allow":
-                self._jobs.put(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False}))["id"])
+            if not info["remote"] or cfg.get("meetings_remote_policy") == "allow":
+                self._enqueue(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False})), cfg)
 
     def _yielding(self, decode, meeting_id: str, *, max_wait: float = 120.0):
         """Wrap a window decoder so it waits, between windows, while dictation
@@ -993,7 +1002,7 @@ class MeetingService:
         except ValueError:
             pass
         include_notes = bool(options.get("include_notes"))
-        cfg = self.config()
+        cfg = job['_config']
         info = self.text_model_info(cfg)
         self.store.update_job(job["id"], detail=f"Asking {info['label'] or info['provider']}", progress=0.2)
         notes = self.store.get_notes(meeting_id)["content"] if include_notes else None
@@ -1012,7 +1021,7 @@ class MeetingService:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             return
-        cfg = self.config()
+        cfg = job['_config']
         info = self.text_model_info(cfg)
         self.store.update_job(job["id"], detail=f"Asking {info['label'] or info['provider']}", progress=0.2)
         latest = self.store.latest_analysis(meeting_id, "summary")
@@ -1033,15 +1042,23 @@ class MeetingService:
 
     # ── audio, export, retention ───────────────────────────────────
     def audio_wav(self, meeting_id: str, source: str) -> bytes:
+        return b''.join(self.audio_stream(meeting_id, source).iter_range())
+
+    def audio_stream(self, meeting_id: str, source: str) -> audio.ChunkedWav:
         chunks = self.store.list_chunks(meeting_id, source)
         if not chunks:
             raise MeetingError("No audio for this source.")
-        key = (meeting_id, source, len(chunks))
-        cached = self._audio_cache.get(key)
-        if cached is None:
-            cached = audio.wav_bytes(audio.concat_chunks(chunks))
-            self._audio_cache = {key: cached}
-        return cached
+        return audio.ChunkedWav(chunks)
+
+    @staticmethod
+    def _remove_directory(directory) -> None:
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            if directory.exists():
+                raise MeetingError('Some audio files could not be removed. Please retry deletion.') from None
+        except OSError:
+            raise MeetingError('Audio could not be removed. Close playback or other apps using it, then retry deletion.') from None
 
     def remove_audio(self, meeting_id: str, *, processing_complete: bool = False) -> dict:
         meeting = self.store.get_meeting(meeting_id)
@@ -1052,12 +1069,11 @@ class MeetingService:
         if not processing_complete and any(j['kind'] in ('transcribe', 'speakers')
                 for j in self.store.list_jobs(meeting_id, ('queued', 'running'))):
             raise MeetingError('Wait for transcription and speaker labels to finish before removing audio.')
+        self._remove_directory(self.store.meeting_dir(meeting_id) / "audio")
         self.store.delete_chunks(meeting_id)
-        shutil.rmtree(self.store.meeting_dir(meeting_id) / "audio", ignore_errors=True)
         self.store.update_meeting(meeting_id, audio_state="removed")
         self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "audio_removed",
                              "Audio deleted; playback and re-transcription are no longer possible")
-        self._audio_cache = {k: v for k, v in self._audio_cache.items() if k[0] != meeting_id}
         return self.store.get_meeting(meeting_id)
 
     def sweep_retention(self) -> list[str]:

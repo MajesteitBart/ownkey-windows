@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import struct
 import wave
 from pathlib import Path
 
@@ -135,6 +136,62 @@ def concat_chunks(chunks: list[dict]) -> np.ndarray:
     if not parts:
         return np.zeros(0, dtype=np.int16)
     return np.concatenate(parts)
+
+
+class ChunkedWav:
+    """A seekable WAV representation of committed chunks without joining tracks.
+
+    Ranges are byte offsets, including the 44-byte PCM header. Gaps retain their
+    original duration as silence. Each read holds at most one bounded block.
+    """
+
+    BLOCK_BYTES = 64 * 1024
+
+    def __init__(self, chunks: list[dict]):
+        self.chunks = sorted((dict(c) for c in chunks), key=lambda c: c['start_sample'])
+        samples = max((int(c['start_sample']) + int(c['n_samples']) for c in self.chunks), default=0)
+        data_size = samples * 2
+        if data_size > 0xffffffff - 36:
+            raise ValueError('Recording exceeds the WAV size limit.')
+        self.header = struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', data_size + 36, b'WAVE',
+                                  b'fmt ', 16, 1, 1, SAMPLE_RATE, SAMPLE_RATE * 2, 2, 16, b'data', data_size)
+        self.size = len(self.header) + data_size
+
+    def iter_range(self, start: int = 0, end: int | None = None):
+        """Yield an inclusive byte range; support unaligned browser seeks."""
+        end = self.size - 1 if end is None else min(end, self.size - 1)
+        if start < 0 or start > end:
+            raise ValueError('Invalid audio byte range.')
+        if start < len(self.header):
+            yield self.header[start:min(end + 1, len(self.header))]
+        position = max(start, len(self.header)) - len(self.header)
+        stop = end + 1 - len(self.header)
+        for chunk in self.chunks:
+            if position >= stop:
+                return
+            chunk_start = int(chunk['start_sample']) * 2
+            chunk_end = chunk_start + int(chunk['n_samples']) * 2
+            if chunk_end <= position:
+                continue
+            while position < min(chunk_start, stop):
+                count = min(self.BLOCK_BYTES, chunk_start - position, stop - position)
+                yield bytes(count)
+                position += count
+            if position >= stop:
+                return
+            with wave.open(str(chunk['path']), 'rb') as source:
+                if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, SAMPLE_RATE):
+                    raise ValueError('Playback requires mono 16-bit 16 kHz chunks.')
+                while position < min(chunk_end, stop):
+                    offset = position - chunk_start
+                    skip = offset % 2
+                    count = min(self.BLOCK_BYTES - skip, chunk_end - position, stop - position)
+                    source.setpos(offset // 2)
+                    data = source.readframes((skip + count + 1) // 2)[skip:skip + count]
+                    if len(data) != count:
+                        raise OSError('A recorded audio chunk is incomplete.')
+                    yield data
+                    position += count
 
 
 class ChunkWriter:

@@ -297,19 +297,45 @@ class _Handler(BaseHTTPRequestHandler):
         self._bytes(HTTPStatus.OK, body, content_type, {"Content-Disposition": f'attachment; filename="{filename}"'})
 
     def h_audio(self, query, mid, source):
-        data = self.owner.service.audio_wav(mid, source)
+        audio = self.owner.service.audio_stream(mid, source)
+        start, end = 0, audio.size - 1
+        status = HTTPStatus.OK
         header = self.headers.get("Range")
-        if header and header.startswith("bytes="):
-            start_text, _, end_text = header[6:].partition("-")
-            start = int(start_text or 0)
-            end = int(end_text) if end_text else len(data) - 1
-            end = min(end, len(data) - 1)
+        if header:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', header.strip())
+            if match and any(match.groups()):
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = min(int(last), end) if last else end
+                else:
+                    start = max(0, audio.size - int(last))
+            else:
+                start = audio.size
             if start > end:
-                return self._bytes(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", "audio/wav", {"Content-Range": f"bytes */{len(data)}"})
-            chunk = data[start:end + 1]
-            return self._bytes(HTTPStatus.PARTIAL_CONTENT, chunk, "audio/wav",
-                               {"Content-Range": f"bytes {start}-{end}/{len(data)}", "Accept-Ranges": "bytes"})
-        self._bytes(HTTPStatus.OK, data, "audio/wav", {"Accept-Ranges": "bytes"})
+                return self._bytes(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", "audio/wav",
+                                   {"Content-Range": f"bytes */{audio.size}"})
+            status = HTTPStatus.PARTIAL_CONTENT
+        blocks = audio.iter_range(start, end)
+        first_block = next(blocks)
+        self.send_response(status)
+        self.send_header('Content-Type', 'audio/wav')
+        self.send_header('Content-Length', str(end - start + 1))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Accept-Ranges', 'bytes')
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{audio.size}')
+        self.end_headers()
+        try:
+            self.wfile.write(first_block)
+            for block in blocks:
+                self.wfile.write(block)
+        except (OSError, ValueError):
+            # Seeking can close a request; deletion can remove a later chunk.
+            # End the incomplete response without appending a JSON error to WAV.
+            self.close_connection = True
+        finally:
+            blocks.close()
 
     def h_policy(self, query):
         body = self._body()
