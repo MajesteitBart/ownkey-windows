@@ -417,6 +417,10 @@ class ServiceTests(unittest.TestCase):
                     self.assertTrue(entered.wait(3))
                     self.assertGreaterEqual(len(calls), 2)
                     self.assertEqual(self.store.list_passages(mid), before)
+                    self.service.rename_speaker(mid, 'person', 'Synthetic renamed speaker', confirmed=True)
+                    answer = self.service.ask(mid, 'Synthetic passage?', remote_ok=True)
+                    during_rev = self.store.get_meeting(mid)['transcript_rev']
+                    self.assertEqual(answer['input_rev'], during_rev)
                 finally:
                     release.set()
                 self.assertTrue(wait_for(lambda: self.store.get_job(job['id'])['state'] in ('done', 'error')))
@@ -424,6 +428,9 @@ class ServiceTests(unittest.TestCase):
                 after = self.store.list_passages(mid)
                 if fails:
                     self.assertEqual(after, before)
+                    self.assertEqual(self.store.get_meeting(mid)['transcript_rev'], during_rev)
+                else:
+                    self.assertGreater(self.store.get_meeting(mid)['transcript_rev'], during_rev)
                 self.assertEqual(after[0]['corrected'], 'Synthetic saved correction.')
                 self.assertEqual(after[0]['speaker_id'], 'person')
 

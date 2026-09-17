@@ -459,11 +459,16 @@ class MeetingStore:
         return self.get_speaker(meeting_id, speaker_id)
 
     # ── passages ───────────────────────────────────────────────────
-    def replace_passages(self, meeting_id: str, passages: list[dict], rev: int) -> None:
+    def replace_passages(self, meeting_id: str, passages: list[dict], rev: int | None = None) -> None:
         """Store recognition output as the base revision, keeping corrections by id."""
         with self._tx():
-            if not self.get_meeting(meeting_id):
+            meeting = self.get_meeting(meeting_id)
+            if not meeting:
                 return
+            # Provider calls run without this lock. Allocate from the current
+            # revision so concurrent speaker edits cannot reuse an old revision.
+            next_rev = meeting['transcript_rev'] + 1
+            rev = next_rev if rev is None else max(next_rev, int(rev))
             existing, by_content = {}, {}
             for r in self._conn.execute("SELECT * FROM passages WHERE meeting_id = ?", (meeting_id,)):
                 existing[r["id"]] = dict(r)

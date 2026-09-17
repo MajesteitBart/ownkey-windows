@@ -815,8 +815,7 @@ class MeetingService:
             return
         self.store.order_speakers(meeting_id, [s["id"] for s in found])  # chips follow the numbering
         merged = sorted(passages, key=lambda p: p['start']) if incremental else merge_tracks({"all": passages})
-        rev = self.store.get_meeting(meeting_id)["transcript_rev"] + 1
-        self.store.replace_passages(meeting_id, merged, rev)
+        self.store.replace_passages(meeting_id, merged)
         self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
                              f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
         if meeting['retention'] == 'after_transcription':
@@ -938,8 +937,7 @@ class MeetingService:
                 if should_stop():
                     return
             merged = merge_tracks(tracks)
-            rev = meeting["transcript_rev"] + 1
-            self.store.replace_passages(meeting_id, merged, rev)
+            self.store.replace_passages(meeting_id, merged)
             self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine["provider"])
             self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "transcribed",
                                  f"{len(merged)} passages · {where}")

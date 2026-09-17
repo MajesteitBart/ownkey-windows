@@ -74,6 +74,20 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.rename_speaker(meeting["id"], "mic", "   ")
 
+    def test_replacement_allocates_a_revision_after_concurrent_edits(self):
+        mid = self.store.create_meeting('Synthetic revision test', {})['id']
+        passages = [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                     'start': 0, 'end': 1, 'text': 'Synthetic passage.'}]
+        self.store.replace_passages(mid, passages, 1)
+        requested_rev = self.store.get_meeting(mid)['transcript_rev'] + 1
+        self.store.bump_transcript_rev(mid)
+        edited_rev = self.store.bump_transcript_rev(mid)
+        self.store.replace_passages(mid, passages, requested_rev)
+        self.assertEqual(self.store.get_meeting(mid)['transcript_rev'], edited_rev + 1)
+        self.assertEqual(self.store.list_passages(mid)[0]['rev'], edited_rev + 1)
+        self.store.replace_passages(mid, passages)
+        self.assertEqual(self.store.get_meeting(mid)['transcript_rev'], edited_rev + 2)
+
     def test_analyses_and_jobs(self):
         meeting = self.store.create_meeting("", {})
         mid = meeting["id"]
