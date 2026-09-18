@@ -285,6 +285,9 @@ The pinned INT8 model downloads 487 MB and takes 672 MB on disk. Allow at least
 On Linux the models root is `${XDG_CACHE_HOME:-~/.cache}/ownkey/models`;
 local recognition has been validated on Windows only.
 Weights use CC BY-SA 4.0; the download retains `LICENSE-WEIGHTS` and `NOTICE.md`.
+New installations verify the pinned Hugging Face release manifest before fetching
+the archive, then verify the archive and extracted files. Installed models remain
+usable offline without fetching the manifest again.
 
 Use the folder field or **Browse...** on the Transcription page to choose where to download,
 or select an existing folder containing the extracted model files, including its
