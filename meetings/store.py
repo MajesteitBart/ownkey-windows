@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import time
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_VERSION = 3
@@ -213,6 +214,13 @@ class MeetingStore:
 
     def _tx(self):
         return _Transaction(self._conn, self._lock)
+
+    @contextmanager
+    def job_result(self, job_id: str):
+        """Serialize a running job's result and follow-ups with cancellation."""
+        with self._tx():
+            job = self.get_job(job_id)
+            yield bool(job and job['state'] == 'running')
 
     # ── meetings ───────────────────────────────────────────────────
     def create_meeting(self, title: str, sources: dict, retention: str = "days7", engine: str = "") -> dict:
@@ -620,7 +628,10 @@ class MeetingStore:
         fields["updated_at"] = self._clock()
         columns = ", ".join(f"{key} = ?" for key in fields)
         with self._tx():
-            self._conn.execute(f"UPDATE jobs SET {columns} WHERE id = ?", (*fields.values(), job_id))
+            # Retrying creates a new job. Late callbacks must never revive one
+            # cancelled while a provider was responding or a worker was starting.
+            self._conn.execute(f"UPDATE jobs SET {columns} WHERE id = ? AND state != 'cancelled'",
+                               (*fields.values(), job_id))
         return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> dict | None:
@@ -693,12 +704,21 @@ class _Transaction:
 
     def __enter__(self):
         self._lock.acquire()
-        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._savepoint = 'nested_' + secrets.token_hex(8) if self._conn.in_transaction else None
+            self._conn.execute(f'SAVEPOINT {self._savepoint}' if self._savepoint else 'BEGIN IMMEDIATE')
+        except Exception:
+            self._lock.release()
+            raise
         return self._conn
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            if exc_type is None:
+            if self._savepoint:
+                if exc_type is not None:
+                    self._conn.execute(f'ROLLBACK TO SAVEPOINT {self._savepoint}')
+                self._conn.execute(f'RELEASE SAVEPOINT {self._savepoint}')
+            elif exc_type is None:
                 self._conn.execute("COMMIT")
             else:
                 self._conn.execute("ROLLBACK")

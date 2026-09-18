@@ -477,6 +477,7 @@ class ServiceTests(unittest.TestCase):
                 self.store.add_analysis(mid, 'summary', provider='test', model='test', input_rev=rev,
                     include_notes=notes, content='{"overview": "Old summary or private notes"}', refs=[])
                 job = self.store.create_job(mid, 'draft')
+                self.store.update_job(job['id'], state='running')
                 with patch('meetings.service.analysis.draft_followup', return_value='Synthetic draft') as draft:
                     self.service._run_draft(dict(job, _config=self.service._job_config(self.cfg)))
                 self.assertIsNone(draft.call_args.args[0])

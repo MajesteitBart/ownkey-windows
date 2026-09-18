@@ -143,6 +143,54 @@ class ChunkedPlaybackTests(unittest.TestCase):
 
 
 class DeletionTests(unittest.TestCase):
+    def test_cancellation_after_final_decode_check_blocks_result_and_automatic_jobs(self):
+        from meetings.transcription import merge_tracks
+        with tempfile.TemporaryDirectory() as directory:
+            reached, release = threading.Event(), threading.Event()
+            store = MeetingStore(directory)
+            service = MeetingService(store, get_config=lambda: {
+                'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'synthetic',
+                'meetings_audio_endpoint': 'https://example.invalid/audio', 'meetings_audio_api_key': 'synthetic',
+                'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid/text',
+                'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic', 'pyannote_api_key': 'synthetic',
+                'meetings_auto_speakers': True, 'meetings_auto_summary': True,
+                'meetings_upload_policy': 'allow', 'meetings_remote_policy': 'allow'},
+                cloud_transcriber=lambda *args: 'Synthetic replacement must be cancelled.',
+                chat=lambda *args: self.fail('Cancelled transcription queued analysis'),
+                diarizer_factory=lambda cfg: self.fail('Cancelled transcription queued speakers'))
+            try:
+                mid = store.create_meeting('Synthetic final-write race', {'mic': {}})['id']
+                store.update_meeting(mid, state='stopped')
+                path = store.audio_dir(mid, 'mic') / 'locked.wav'
+                audio.write_wav(path, np.full(16000, 3000, dtype=np.int16))
+                store.add_chunk(mid, 'mic', 0, 0, 16000, str(path))
+                store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                                             'start': 0, 'end': 1, 'text': 'Synthetic saved source.'}])
+                original = store.list_passages(mid)
+                def delayed_merge(tracks):
+                    # All provider and per-track cancellation checks have passed.
+                    reached.set()
+                    if not release.wait(5):
+                        raise RuntimeError('Test did not release final merge')
+                    return merge_tracks(tracks)
+                with patch('meetings.service.merge_tracks', side_effect=delayed_merge):
+                    job = service.transcribe(mid, remote_ok=True)
+                    self.assertTrue(reached.wait(3))
+                    with patch('meetings.service.shutil.rmtree', side_effect=PermissionError('Synthetic lock')):
+                        with self.assertRaises(MeetingError):
+                            service.delete_meeting(mid)
+                    release.set()
+                    self.assertTrue(wait_for(lambda: service._running_job is None))
+                # A delayed postprocessing callback also checks this exact job.
+                service._after_transcribe(mid, job)
+                self.assertEqual(store.list_passages(mid), original)
+                self.assertFalse(store.get_meeting(mid)['transcribed_at'])
+                self.assertEqual(store.list_events(mid), [])
+                self.assertEqual([j['state'] for j in store.list_jobs(mid)], ['cancelled'])
+            finally:
+                release.set()
+                service.close()
+
     def test_failed_delete_allows_new_jobs_without_reviving_cancelled_provider_calls(self):
         for operation in ('transcribe', 'summarize', 'draft', 'label_speakers'):
             with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:

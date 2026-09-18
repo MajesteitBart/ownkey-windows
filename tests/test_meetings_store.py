@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -27,6 +28,49 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(listed[0]["elapsed"], 12.5)
         with self.assertRaises(ValueError):
             self.store.update_meeting(meeting["id"], state="bogus")
+
+    def test_job_result_rolls_back_nested_writes_and_child_jobs_together(self):
+        mid = self.store.create_meeting('Synthetic result transaction', {})['id']
+        job = self.store.create_job(mid, 'transcribe')
+        self.store.update_job(job['id'], state='running')
+        with self.assertRaisesRegex(RuntimeError, 'Synthetic interruption'):
+            with self.store.job_result(job['id']) as active:
+                self.assertTrue(active)
+                self.store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                                                  'start': 0, 'end': 1, 'text': 'Synthetic result.'}])
+                self.store.update_meeting(mid, transcribed_at=123)
+                self.store.add_event(mid, 1, 'transcribed', 'Synthetic completion')
+                self.store.create_job(mid, 'summary')
+                raise RuntimeError('Synthetic interruption')
+        self.assertEqual(self.store.list_passages(mid), [])
+        self.assertFalse(self.store.get_meeting(mid)['transcribed_at'])
+        self.assertEqual(self.store.list_events(mid), [])
+        self.assertEqual(len(self.store.list_jobs(mid)), 1)
+
+    def test_cancellation_serializes_with_result_and_cannot_be_revived(self):
+        mid = self.store.create_meeting('Synthetic cancellation transaction', {})['id']
+        job = self.store.create_job(mid, 'transcribe')
+        self.store.update_job(job['id'], state='running')
+        started, cancelled = threading.Event(), threading.Event()
+        def cancel():
+            started.set()
+            self.store.update_job(job['id'], state='cancelled')
+            cancelled.set()
+        thread = threading.Thread(target=cancel)
+        with self.store.job_result(job['id']) as active:
+            self.assertTrue(active)
+            thread.start()
+            self.assertTrue(started.wait(2))
+            self.assertFalse(cancelled.wait(.05))
+            self.store.add_event(mid, 1, 'transcribed', 'Synthetic completed before cancellation')
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(cancelled.is_set())
+        with self.store.job_result(job['id']) as active:
+            self.assertFalse(active)
+        for state in ('running', 'done', 'error'):
+            self.store.update_job(job['id'], state=state)
+            self.assertEqual(self.store.get_job(job['id'])['state'], 'cancelled')
 
     def test_notes_keep_revisions_and_never_lose_content(self):
         meeting = self.store.create_meeting("", {})

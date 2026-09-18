@@ -640,10 +640,14 @@ class MeetingService:
             meeting = self.store.get_meeting(meeting_id)
             if not meeting:
                 return
-            self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine['provider'])
-            self.store.add_event(meeting_id, meeting['elapsed'], 'transcribed', 'Live transcription complete')
-            self.store.update_job(job['id'], state='done', progress=1.)
-            self._after_transcribe(meeting_id)
+            with self.store.job_result(job['id']) as active:
+                if not active or meeting_id in self._cancelled:
+                    return
+                self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine['provider'])
+                self.store.add_event(meeting_id, meeting['elapsed'], 'transcribed', 'Live transcription complete')
+                self._after_transcribe(meeting_id, job)
+                self.store.update_job(job['id'], state='done', progress=1.)
+            self.sweep_retention()
 
         live = LiveTranscription(self.store, job, sources=self.store.get_meeting(meeting_id)['sources'],
             decoder_factory=decoder_factory, capture=session, on_complete=complete,
@@ -822,22 +826,25 @@ class MeetingService:
             labelled, speakers = diarization.assign_speakers(mine, segments, source=source, fallback_speaker=source,
                                                              first_number=len(found) + 1,
                                                              preserve_passages=incremental)
-            for speaker in speakers:
-                existing = self.store.get_speaker(meeting_id, speaker["id"])
-                if existing is None:
-                    self.store.ensure_speaker(meeting_id, speaker["id"], source, speaker["name"], confirmed=False)
-                elif not existing["confirmed"]:
-                    # unconfirmed placeholders take the fresh numbering; confirmed names stay
-                    self.store.rename_speaker(meeting_id, speaker["id"], speaker["name"], confirmed=False)
-            found.extend(speakers)
+            found.extend(dict(speaker, source=source) for speaker in speakers)
             passages = others + labelled
         if should_stop():
             return
-        self.store.order_speakers(meeting_id, [s["id"] for s in found])  # chips follow the numbering
-        merged = sorted(passages, key=lambda p: p['start']) if incremental else merge_tracks({"all": passages})
-        self.store.replace_passages(meeting_id, merged)
-        self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
-                             f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
+        with self.store.job_result(job['id']) as active:
+            if not active or meeting_id in self._cancelled:
+                return
+            for speaker in found:
+                existing = self.store.get_speaker(meeting_id, speaker["id"])
+                if existing is None:
+                    self.store.ensure_speaker(meeting_id, speaker["id"], speaker["source"], speaker["name"], confirmed=False)
+                elif not existing["confirmed"]:
+                    # unconfirmed placeholders take the fresh numbering; confirmed names stay
+                    self.store.rename_speaker(meeting_id, speaker["id"], speaker["name"], confirmed=False)
+            self.store.order_speakers(meeting_id, [s["id"] for s in found])  # chips follow the numbering
+            merged = sorted(passages, key=lambda p: p['start']) if incremental else merge_tracks({"all": passages})
+            self.store.replace_passages(meeting_id, merged)
+            self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
+                                 f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
         if meeting['retention'] == 'after_transcription':
             self.sweep_retention()
         return True
@@ -859,7 +866,10 @@ class MeetingService:
                 self.store.update_job(job_id, state="cancelled")
                 continue
             self._running_job = {"id": job_id, "kind": job["kind"], "meeting_id": job["meeting_id"]}
-            self.store.update_job(job_id, state="running", attempts=job["attempts"] + 1)
+            claimed = self.store.update_job(job_id, state="running", attempts=job["attempts"] + 1)
+            if not claimed or claimed['state'] != 'running':
+                self._running_job = None
+                continue
             try:
                 if job["kind"] == "transcribe":
                     completed = self._run_transcribe(job)
@@ -945,12 +955,15 @@ class MeetingService:
                 def progress(done, total, new, source=source, done_before=done_before):
                     if should_stop():
                         return
-                    fraction = min(0.99, (done_before + done) / total_seconds)
-                    self.store.update_job(job["id"], progress=fraction,
-                                          detail=f"{SOURCE_LABELS.get(source, source)} · {int(done // 60)}:{int(done % 60):02d} of {int(total // 60)}:{int(total % 60):02d}")
-                    if new and not replacing_existing:
-                        provisional = [dict(p, id=f"{source}-{p['id']}") for p in new]
-                        self.store.append_passages(meeting_id, provisional, meeting["transcript_rev"] + 1)
+                    with self.store.job_result(job['id']) as active:
+                        if not active or meeting_id in self._cancelled:
+                            return
+                        fraction = min(0.99, (done_before + done) / total_seconds)
+                        self.store.update_job(job["id"], progress=fraction,
+                                              detail=f"{SOURCE_LABELS.get(source, source)} · {int(done // 60)}:{int(done % 60):02d} of {int(total // 60)}:{int(total % 60):02d}")
+                        if new and not replacing_existing:
+                            provisional = [dict(p, id=f"{source}-{p['id']}") for p in new]
+                            self.store.append_passages(meeting_id, provisional, meeting["transcript_rev"] + 1)
 
                 tracks[source] = transcribe_track(samples, decode, source=source,
                                                   on_progress=progress, should_stop=should_stop)
@@ -958,34 +971,38 @@ class MeetingService:
                 if should_stop():
                     return
             merged = merge_tracks(tracks)
-            self.store.replace_passages(meeting_id, merged)
-            self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine["provider"])
-            self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "transcribed",
-                                 f"{len(merged)} passages · {where}")
+            with self.store.job_result(job['id']) as active:
+                if not active or meeting_id in self._cancelled:
+                    return
+                self.store.replace_passages(meeting_id, merged)
+                self.store.update_meeting(meeting_id, transcribed_at=time.time(), engine=engine["provider"])
+                self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "transcribed",
+                                     f"{len(merged)} passages · {where}")
+                self._after_transcribe(meeting_id, job)
         finally:
             if attempt is not None:
                 attempt.close()
-        self._after_transcribe(meeting_id)
         return True
 
-    def _after_transcribe(self, meeting_id):
-        latest = self.store.get_meeting(meeting_id)
-        if not latest or meeting_id in self._cancelled or self._closed:
-            return
-        cfg = self._job_config(self.config())
-        auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
-                and cfg.get("meetings_upload_policy") == "allow" and latest and latest["audio_state"] == "kept"
-                and self._speaker_targets(meeting_id, latest)
-                and not (self.store.live_options(meeting_id) or {}).get('speakers'))
-        if auto_speakers:
-            self._enqueue(self.store.create_job(
-                meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)})), cfg)
-        elif latest and latest['retention'] == 'after_transcription':
-            self.sweep_retention()
-        if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
-            info = self.text_model_info(cfg)
-            if not info["remote"] or cfg.get("meetings_remote_policy") == "allow":
-                self._enqueue(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False})), cfg)
+    def _after_transcribe(self, meeting_id, job):
+        with self.store.job_result(job['id']) as active:
+            if not active or meeting_id in self._cancelled:
+                return
+            latest = self.store.get_meeting(meeting_id)
+            if not latest or meeting_id in self._cancelled or self._closed:
+                return
+            cfg = self._job_config(self.config())
+            auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
+                    and cfg.get("meetings_upload_policy") == "allow" and latest and latest["audio_state"] == "kept"
+                    and self._speaker_targets(meeting_id, latest)
+                    and not (self.store.live_options(meeting_id) or {}).get('speakers'))
+            if auto_speakers:
+                self._enqueue(self.store.create_job(
+                    meeting_id, "speakers", json.dumps({"tracks": self._speaker_targets(meeting_id, latest)})), cfg)
+            if cfg.get("meetings_auto_summary") and self.text_model_info(cfg)["configured"]:
+                info = self.text_model_info(cfg)
+                if not info["remote"] or cfg.get("meetings_remote_policy") == "allow":
+                    self._enqueue(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False})), cfg)
 
     def _yielding(self, decode, job: dict, *, max_wait: float = 120.0):
         """Wrap a window decoder so it waits, between windows, while dictation
@@ -1023,9 +1040,12 @@ class MeetingService:
                     should_stop=lambda: self._job_cancelled(job)), notes=notes)
         if self._job_cancelled(job):
             return
-        self.store.add_analysis(meeting_id, "summary", provider=info["provider"], model=info["model"],
-                                input_rev=meeting["transcript_rev"], include_notes=include_notes,
-                                content=json.dumps(summary, ensure_ascii=False), refs=analysis.summary_refs(summary))
+        with self.store.job_result(job['id']) as active:
+            if not active or meeting_id in self._cancelled:
+                return
+            self.store.add_analysis(meeting_id, "summary", provider=info["provider"], model=info["model"],
+                                    input_rev=meeting["transcript_rev"], include_notes=include_notes,
+                                    content=json.dumps(summary, ensure_ascii=False), refs=analysis.summary_refs(summary))
         return True
 
     def _run_draft(self, job: dict) -> bool | None:
@@ -1048,9 +1068,12 @@ class MeetingService:
                     should_stop=lambda: self._job_cancelled(job)))
         if self._job_cancelled(job):
             return
-        self.store.add_analysis(meeting_id, "draft", provider=info["provider"], model=info["model"],
-                                input_rev=meeting["transcript_rev"], include_notes=False, content=text,
-                                refs=analysis.summary_refs(summary) if summary else [])
+        with self.store.job_result(job['id']) as active:
+            if not active or meeting_id in self._cancelled:
+                return
+            self.store.add_analysis(meeting_id, "draft", provider=info["provider"], model=info["model"],
+                                    input_rev=meeting["transcript_rev"], include_notes=False, content=text,
+                                    refs=analysis.summary_refs(summary) if summary else [])
         return True
 
     # ── audio, export, retention ───────────────────────────────────
