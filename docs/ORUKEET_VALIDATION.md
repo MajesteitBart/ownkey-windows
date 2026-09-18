@@ -106,6 +106,16 @@ dist/Ownkey/Ownkey.exe --local-smoke-test --model-root $modelsRoot --wav $englis
 Read the JSON result after the process exits. A windowed executable does not
 write diagnostics to a console. The smoke test never downloads a model.
 
+The Settings widgets have their own check in the frozen runtime. It builds a
+button, a toggle, a card, a dropdown and a scrollbar on a hidden window and
+reports whether the rounded shapes are antialiased images (they fall back to
+plain polygons when Pillow cannot render), whether the dropdown list builds,
+and how wide the scrollbar is. It starts no tray icon and no hotkeys:
+
+```powershell
+dist/Ownkey/Ownkey.exe --ui-smoke-test --output build/frozen-ui.json
+```
+
 ## Remaining manual release checks
 
 The follow-up implementation adds editable model folders and an idle timeout

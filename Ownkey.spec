@@ -1,13 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_dynamic_libs, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 
 a = Analysis(
     ['ownkey.py'],
     pathex=[],
     binaries=collect_dynamic_libs('sherpa_onnx'),
-    datas=[('assets/tray', 'assets/tray'), ('assets/fonts', 'assets/fonts')]
-          + copy_metadata('sherpa-onnx') + copy_metadata('sherpa-onnx-core'),
+    datas=[('assets/tray', 'assets/tray'), ('assets/fonts', 'assets/fonts'), ('meetings/ui', 'meetings/ui')]
+          + copy_metadata('sherpa-onnx') + copy_metadata('sherpa-onnx-core')
+          + collect_data_files('soundcard'),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

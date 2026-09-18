@@ -13,6 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  meetings-ui:
+    name: Meeting UI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check meeting scripts and recovery banners
+        run: |
+          node --check meetings/ui/app.js
+          node --test tests/test_meetings_ui.cjs
+
   linux:
     name: Python / Linux
     runs-on: ubuntu-24.04

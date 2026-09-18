@@ -150,10 +150,7 @@ Node.js with pnpm, Rust with the MSVC toolchain, Visual Studio Build Tools, and
 build-installer.bat
 ```
 
-This contributor path does not require a certificate. It writes
-`dist-installer-dev\Ownkey-Setup-0.5.0-UNSIGNED-DEV.exe` and a warning file.
-Do not publish that output. It packages the PyInstaller backend, Tauri overlay,
-shortcuts, uninstaller, and Ownkey branding for local testing.
+This contributor path does not require a certificate. It writes `dist-installer-dev\Ownkey-Setup-0.6.0-UNSIGNED-DEV.exe` and a warning file. Do not publish that output. It packages the PyInstaller backend, Tauri overlay, shortcuts, uninstaller, and Ownkey branding for local testing.
 
 ### Build a signed public release
 
@@ -218,6 +215,22 @@ Filler words, and Rewriting.
 - **Rewrite selected text** captures the selected text and your spoken
   instruction, sends both to the configured rewrite provider, and replaces the
   selection with the result.
+
+### Meetings
+
+Right-click the tray icon → **Meetings** → **New meeting**. The Ownkey Meetings window records your microphone and optional call audio as separate tracks. **Transcribe while recording** is enabled by default: short phrases appear after pauses, and Stop finishes the remaining audio. Choose local Orukeet or your configured cloud provider in Settings › Meetings. Cloud transcription asks before uploading during a recording.
+
+The three tabs are **My thoughts** (your notes), **Transcript** (editable passages, search and playback) and **Summary** (decisions, actions, questions and follow-up drafts with citations). Summary and question requests use the rewrite provider and ask before sending text remotely. Export Markdown or JSON at any time.
+
+Optional **live speaker changes** use a pyannoteAI key and separate upload permission. Call audio and shared microphones can show Speaker 1, Speaker 2, … while recording, and speaker changes help choose transcription boundaries. You can name speakers and correct completed text while recording continues. Pause sends only generated silence to open speaker connections to preserve their identities; that paused time still counts as streaming usage. Batch speaker labels remain available after Stop. See [the implementation and validation notes](docs/MEETINGS_LIVE_PLAN.md) for the behavior and its limits.
+
+<p align="center">
+  <img src="assets/readme/meetings-transcript.png" alt="The Ownkey Meetings window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">
+</p>
+
+More screens: [recording with notes](assets/readme/meetings-recording.png),
+[summary, questions and follow-up draft](assets/readme/meetings-summary.png),
+[new meeting](assets/readme/meetings-new.png).
 
 ## 05 · Bring your own key
 

@@ -330,8 +330,13 @@ def complete_rewrite(
     user_prompt: str,
     *,
     timeout: float = 30,
+    max_tokens: int | None = None,
 ) -> str:
-    """Run a text rewrite through the selected provider's native API."""
+    """Run a text rewrite through the selected provider's native API.
+
+    ``max_tokens`` overrides the short-rewrite output cap for longer jobs such
+    as meeting summaries; ``None`` keeps the rewrite defaults.
+    """
     provider_id = normalize_provider(provider, fallback="")
     if provider_id not in REWRITE_PROVIDER_IDS:
         raise ProviderConfigurationError("This provider does not support rewriting.")
@@ -362,7 +367,9 @@ def complete_rewrite(
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if provider_id in {"openrouter", "custom"}:
+        if max_tokens is not None:
+            body["max_tokens"] = int(max_tokens)
+        elif provider_id in {"openrouter", "custom"}:
             # Avoid reserving the model's entire output capacity for a short rewrite.
             body["max_tokens"] = 1024
         response = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
@@ -372,7 +379,7 @@ def complete_rewrite(
     if provider_id == "anthropic":
         body = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": int(max_tokens) if max_tokens is not None else 4096,
             "temperature": 0.2,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],

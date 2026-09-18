@@ -67,9 +67,19 @@ class LocalAttempt:
             on_loading()
         return self.service._executor.submit(self._decode_when_ready, wav_bytes, vocabulary).result()
 
+    def transcribe_timed(self, wav_bytes, vocabulary=()):
+        """Decode and keep token timing: (text, tokens, timestamps, durations)."""
+        if self._closed:
+            raise ModelError("This local recording has already finished.")
+        return self.service._executor.submit(self._decode_timed_when_ready, wav_bytes, vocabulary).result()
+
     def _decode_when_ready(self, wav_bytes, vocabulary):
         self.ready.result()
         return self.service._decode(wav_bytes, vocabulary)
+
+    def _decode_timed_when_ready(self, wav_bytes, vocabulary):
+        self.ready.result()
+        return self.service._decode(wav_bytes, vocabulary, timed=True)
 
     def close(self):
         with self.service._lock:
@@ -164,7 +174,7 @@ class LocalTranscriber:
                 self._last_used = self._clock()
                 self._maybe_unload()
 
-    def _decode(self, wav_bytes, vocabulary=()):
+    def _decode(self, wav_bytes, vocabulary=(), timed=False):
         with self._lock:
             if self._closed:
                 raise ModelError("Local transcription is shutting down.")
@@ -176,18 +186,52 @@ class LocalTranscriber:
                 if not self.models.files_present():
                     raise ModelError("Model missing. Download it in Settings > Transcription.")
                 hotwords = hotwords_string(vocabulary)
-                stream = self._recognizer.create_stream(hotwords) if hotwords else self._recognizer.create_stream()
-                try:
-                    stream.accept_waveform(SAMPLE_RATE, samples)
-                    self._recognizer.decode_stream(stream)
-                    return stream.result.text.strip()
-                finally:
-                    del stream
+                if not timed and samples.size > 15 * SAMPLE_RATE:
+                    return self._decode_long(samples, hotwords)
+                result = self._recognize(samples, hotwords)
+                return result if timed else result[0]
         finally:
             with self._lock:
                 self._decoding = False
                 self._last_used = self._clock()
                 self._maybe_unload()
+
+    def _recognize(self, samples, hotwords):
+        stream = self._recognizer.create_stream(hotwords) if hotwords else self._recognizer.create_stream()
+        try:
+            stream.accept_waveform(SAMPLE_RATE, samples)
+            self._recognizer.decode_stream(stream)
+            result = stream.result
+            return (result.text.strip(), list(getattr(result, 'tokens', []) or []),
+                    [float(t) for t in getattr(result, 'timestamps', []) or []],
+                    [float(d) for d in getattr(result, 'durations', []) or []])
+        finally:
+            del stream
+
+    def _decode_long(self, samples, hotwords):
+        """Long dictation uses the same bounded windows, then inserts text once."""
+        import numpy as np
+        from meetings.segmentation import next_boundary, owned_tokens, LEFT_CONTEXT, RIGHT_CONTEXT
+
+        pcm = (samples * 32768).astype(np.int16)
+        start, parts = 0, []
+        while start < pcm.size:
+            if self._closed:
+                raise ModelError('Local transcription is shutting down.')
+            core = pcm[start:start + 28 * SAMPLE_RATE]
+            boundary = next_boundary(core, final=start + core.size >= pcm.size)
+            end = start + boundary.end
+            left, right = max(0, start - LEFT_CONTEXT), min(pcm.size, end + RIGHT_CONTEXT)
+            if np.any(np.abs(samples[start:end]) > .002):
+                text, tokens, stamps, durations = self._recognize(samples[left:right], hotwords)
+                if tokens:
+                    words = owned_tokens(tokens, stamps, durations, offset=left / SAMPLE_RATE,
+                                         start=start / SAMPLE_RATE, end=end / SAMPLE_RATE)
+                    text = ''.join(word[0] for word in words).strip()
+                if text:
+                    parts.append(text)
+            start = end
+        return ' '.join(parts)
 
     def _maybe_unload(self):
         if self._attempts or self._loading or self._decoding:

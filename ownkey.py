@@ -20,6 +20,7 @@ import time
 import wave
 import ctypes
 import tempfile
+import webbrowser
 from ctypes import wintypes
 from urllib.parse import urlparse
 
@@ -59,6 +60,9 @@ from providers import (
 from local_models import BUSY_STAGES, MODEL_ID, ORUKEET, LocalModelManager, ModelError
 from local_transcription import LocalTranscriber, SAMPLE_RATE
 import brand_ui
+from meetings.server import MeetingServer
+from meetings.service import MeetingService
+from meetings.store import MeetingStore
 from text_cleanup import (
     FILLER_LANGUAGES,
     clean_transcript,
@@ -148,6 +152,29 @@ DEFAULT_CONFIG = {
     "remove_fillers": True,
     "filler_languages": ["en", "nl"],
     "custom_fillers": "",
+    # Meetings: remote analysis policy, auto-summary after transcription, default audio retention,
+    # and speaker labels through pyannoteAI (audio upload policy, key, auto-run).
+    "meetings_remote_policy": "ask",
+    "meetings_upload_policy": "ask",
+    "meetings_transcription_policy": "ask",
+    "meetings_live_transcription_policy": "ask",
+    "meetings_live_speakers_policy": "ask",
+    "meetings_auto_summary": False,
+    "meetings_auto_speakers": False,
+    "meetings_retention": "days7",
+    "pyannote_api_key": "",
+    # Meeting transcription: "same" follows the dictation provider; otherwise
+    # any audio provider with its own key, endpoint and model.
+    "meetings_audio_provider": "same",
+    "meetings_audio_api_key": "",
+    "meetings_audio_endpoint": "",
+    "meetings_audio_model": "",
+}
+
+MEETING_RETENTION_LABELS = {
+    "days7": "7 days after transcription",
+    "keep": "Until I delete the meeting",
+    "after_transcription": "Remove after transcription",
 }
 
 HOTKEY_LIST = [
@@ -207,7 +234,20 @@ MIN_AUDIO_BYTES = 800
 # If no speech activity was detected, skip very short captures.
 MIN_AUDIO_SECONDS_WITHOUT_ACTIVITY = 0.10
 CONNECTION_CHECK_INTERVAL = 12
-OVERLAY_BRIDGE_ADDR = ("127.0.0.1", 38485)
+
+
+def _overlay_bridge_addr() -> tuple[str, int]:
+    """127.0.0.1:38485, or OWNKEY_OVERLAY_UDP so a development copy can run next
+    to an installed Ownkey. The overlay process reads the same variable."""
+    host, _, port = os.environ.get("OWNKEY_OVERLAY_UDP", "").strip().rpartition(":")
+    if host and port.isdigit():
+        return host, int(port)
+    return "127.0.0.1", 38485
+
+
+OVERLAY_BRIDGE_ADDR = _overlay_bridge_addr()
+# How long Open Meetings waits for the overlay process before it uses the browser.
+MEETING_WINDOW_WAIT_SECONDS = 6.0
 NO_AUDIO_MESSAGE_DELAY_SECONDS = 5.0
 AUDIO_ACTIVITY_DB_THRESHOLD = -57.0
 AUDIO_ACTIVITY_LEVEL_THRESHOLD = 0.05
@@ -282,6 +322,23 @@ def find_tauri_overlay_exe() -> str | None:
     return None
 
 
+def request_meeting_window(url: str, navigate: bool, timeout: float = 2.0) -> str | None:
+    """Ask the overlay process for Ownkey's meeting window.
+
+    Returns its answer ("opened", "focused", "refused" or "failed"), or None
+    when nothing answered: no overlay, an older overlay, or one still starting.
+    """
+    body = json.dumps({"meetings": {"url": url, "navigate": bool(navigate)}}, separators=(",", ":"))
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(timeout)
+            client.sendto(body.encode("utf-8"), OVERLAY_BRIDGE_ADDR)
+            reply, _sender = client.recvfrom(4096)
+        return str(json.loads(reply.decode("utf-8")).get("meetings") or "") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def tauri_overlay_only_enabled() -> bool:
     """Resolve whether native Tk overlay should be disabled in favor of Tauri."""
     raw = os.environ.get("OWNKEY_TAURI_OVERLAY_ONLY")
@@ -293,6 +350,10 @@ def tauri_overlay_only_enabled() -> bool:
 def is_tauri_overlay_process_running() -> bool:
     """Check whether the Tauri overlay process is already running."""
     if os.name != "nt":
+        return False
+    if os.environ.get("OWNKEY_OVERLAY_UDP", "").strip():
+        # A development copy on its own port: the overlay of an installed Ownkey
+        # listens elsewhere, so only the overlay this process started counts.
         return False
     try:
         proc = subprocess.run(
@@ -459,6 +520,24 @@ def load_config() -> dict:
     cfg["remove_fillers"] = bool(cfg.get("remove_fillers", True))
     cfg["filler_languages"] = normalize_filler_languages(cfg.get("filler_languages"))
     cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
+    cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
+    cfg["meetings_upload_policy"] = "allow" if cfg.get("meetings_upload_policy") == "allow" else "ask"
+    cfg["meetings_transcription_policy"] = "allow" if cfg.get("meetings_transcription_policy") == "allow" else "ask"
+    for key in ('meetings_live_transcription_policy', 'meetings_live_speakers_policy'):
+        cfg[key] = 'allow' if cfg.get(key) == 'allow' else 'ask'
+    choice = str(cfg.get("meetings_audio_provider") or "same").strip().lower()
+    if choice != "same":
+        choice = normalize_provider(choice, "same")
+        if choice not in AUDIO_PROVIDER_IDS:
+            choice = "same"
+    cfg["meetings_audio_provider"] = choice
+    for key in ("meetings_audio_api_key", "meetings_audio_endpoint", "meetings_audio_model"):
+        cfg[key] = str(cfg.get(key) or "").strip()
+    cfg["meetings_auto_summary"] = bool(cfg.get("meetings_auto_summary", False))
+    cfg["meetings_auto_speakers"] = bool(cfg.get("meetings_auto_speakers", False))
+    if cfg.get("meetings_retention") not in MEETING_RETENTION_LABELS:
+        cfg["meetings_retention"] = "days7"
+    cfg["pyannote_api_key"] = str(cfg.get("pyannote_api_key") or "").strip()
     return cfg
 
 
@@ -1452,6 +1531,7 @@ class SettingsWindow:
         ("dictionary", "Dictionary", "Names and terms typed the way you spell them."),
         ("fillers", "Filler words", "Clean hesitations out of dictation without an AI model."),
         ("rewriting", "Rewriting", "Optional AI polish for dictation, and voice edits for selected text."),
+        ("meetings", "Meetings", "Record a conversation, transcribe it on this PC, and label who spoke."),
     )
     FILLER_SAMPLE = "Um, I think, uh, we should ehm ship it on Tuesday. Er is nog één ding."
 
@@ -1508,7 +1588,8 @@ class SettingsWindow:
 
     def _combo(self, parent, values, state="readonly", width=None):
         var = tk.StringVar(self._win)
-        widget = ttk.Combobox(parent, textvariable=var, values=values, state=state, font=self.type.body)
+        widget = ttk.Combobox(parent, textvariable=var, values=values, state=state, font=self.type.body,
+                              height=12)
         if width:
             widget.configure(width=width)
         return var, widget
@@ -1668,14 +1749,27 @@ class SettingsWindow:
         self._toggle(self._row(card, "Start at login", "Ownkey waits in the tray when you sign in.", last=True), v_startup).pack()
 
         # ---- provider controls (shared) ------------------------------
-        def build_provider_controls(parent, activity, provider_ids):
-            prefix = "audio" if activity == "audio" else "rewrite"
-            provider_value = normalize_provider(cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"]))
+        def build_provider_controls(parent, activity, provider_ids, *, prefix=None, first_label=None, first_value=None):
+            """Provider combo plus key, endpoint and model fields.
+
+            ``first_label``/``first_value`` add a leading choice that is not a
+            provider (Meetings uses "Same as dictation"); the remote fields
+            hide for that choice and for the local model."""
+            prefix = prefix or ("audio" if activity == "audio" else "rewrite")
+            raw_value = str(cfg.get(f"{prefix}_provider", DEFAULT_CONFIG[f"{prefix}_provider"]) or "")
+            if first_value is not None and raw_value == first_value:
+                provider_value = first_value
+                endpoint_provider = normalize_provider(cfg.get("audio_provider", DEFAULT_CONFIG["audio_provider"]))
+            else:
+                provider_value = normalize_provider(raw_value)
+                endpoint_provider = provider_value
             labels = provider_labels(provider_ids)
+            if first_label is not None:
+                labels = (first_label,) + tuple(labels)
 
             provider_field = self._field(parent, "Provider")
             v_provider, c_provider = self._combo(provider_field.control, labels)
-            v_provider.set(provider_label(provider_value))
+            v_provider.set(first_label if provider_value == first_value else provider_label(provider_value))
             c_provider.pack(fill="x")
 
             remote = tk.Frame(parent, bg=parent.cget("bg"))
@@ -1686,7 +1780,7 @@ class SettingsWindow:
             e_api_key.insert(0, cfg.get(f"{prefix}_api_key", ""))
 
             endpoint_field = self._field(remote, "Endpoint")
-            v_endpoint, c_endpoint = self._combo(endpoint_field.control, provider_endpoints(provider_value, activity), "normal")
+            v_endpoint, c_endpoint = self._combo(endpoint_field.control, provider_endpoints(endpoint_provider, activity), "normal")
             v_endpoint.set(cfg.get(f"{prefix}_endpoint", DEFAULT_CONFIG[f"{prefix}_endpoint"]))
             c_endpoint.pack(fill="x")
 
@@ -1698,10 +1792,22 @@ class SettingsWindow:
             refresh_button.pack(side="left", padx=(8, 0))
 
             def selected_provider():
-                return normalize_provider(v_provider.get(), provider_value)
+                if first_label is not None and v_provider.get() == first_label:
+                    return first_value
+                return normalize_provider(v_provider.get(), provider_value if provider_value != first_value else "openai")
+
+            def sync_visibility():
+                """Key, endpoint and model only matter for a cloud provider."""
+                if selected_provider() in (first_value, "orukeet"):
+                    remote.pack_forget()
+                else:
+                    remote.pack(fill="x", after=provider_field)
 
             def on_provider_change(_event=None):
                 provider_id = selected_provider()
+                if provider_id == first_value:
+                    sync_visibility()
+                    return
                 endpoints = provider_endpoints(provider_id, activity)
                 c_endpoint.configure(values=endpoints)
                 v_endpoint.set(default_endpoint(provider_id, activity))
@@ -1710,8 +1816,10 @@ class SettingsWindow:
                 e_api_key.delete(0, tk.END)
                 v_model.set(MODEL_ID if provider_id == "orukeet" else "")
                 c_model.configure(values=())
-                if activity == "audio":
+                if prefix == "audio":
                     update_local_visibility()
+                else:
+                    sync_visibility()
 
             def fetch_models():
                 provider_id = selected_provider()
@@ -1752,6 +1860,8 @@ class SettingsWindow:
 
             c_provider.bind("<<ComboboxSelected>>", on_provider_change)
             refresh_button.configure(command=fetch_models)
+            if prefix != "audio":
+                sync_visibility()
             return {
                 "provider": v_provider,
                 "api_key": e_api_key,
@@ -1759,6 +1869,7 @@ class SettingsWindow:
                 "model": v_model,
                 "remote": remote,
                 "provider_field": provider_field,
+                "selected": selected_provider,
             }
 
         # ---- Transcription ------------------------------------------
@@ -2130,6 +2241,46 @@ class SettingsWindow:
         v_rewrite_hotkey.set(sanitize_rewrite_hotkey(cfg.get("rewrite_hotkey", DEFAULT_CONFIG["rewrite_hotkey"]), hotkey_value))
         c_rewrite_hotkey.pack()
 
+        # ---- meetings page --------------------------------------------
+        page = self.pages["meetings"]
+        card = self._card(page).inner
+        self._heading(card, "Transcription", "Same choices as dictation")
+        tk.Label(card, text="Meetings are transcribed after Stop, in windows of up to 28 seconds. Same as dictation follows "
+                 "the provider in Transcription. Orukeet keeps the audio on this PC and returns word timing; a cloud "
+                 "provider receives the audio windows over your own key, returns text per window, and asks before the "
+                 "first upload.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
+        meeting_audio_controls = build_provider_controls(
+            card, "audio", AUDIO_PROVIDER_IDS, prefix="meetings_audio", first_label="Same as dictation", first_value="same")
+
+        card = self._card(page).inner
+        self._heading(card, "Speaker labels", "pyannoteAI · remote")
+        tk.Label(card, text="Who said what, from pyannoteAI's hosted diarization. The call audio track is uploaded "
+                 "for that step only; the transcript and your notes never are. Uploads are deleted within 48 hours "
+                 "and are not used for training. Without a key, passages keep their Microphone and Call audio labels.",
+                 wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(0, 12))
+        pyannote_field = self._field(card, "pyannoteAI API key", "Create one at dashboard.pyannote.ai.")
+        e_pyannote = self._entry(pyannote_field.control, show="•")
+        e_pyannote.pack(fill="x")
+        e_pyannote.set_value(cfg.get("pyannote_api_key", ""))
+        v_auto_speakers = tk.BooleanVar(win, value=bool(cfg.get("meetings_auto_speakers", False)))
+        self._toggle(self._row(card, "Label speakers after every transcription",
+                               "Runs only after you have allowed the upload once in the meeting window.", last=True),
+                     v_auto_speakers).pack()
+
+        card = self._card(page).inner
+        self._heading(card, "Summary and storage", "Meetings")
+        v_auto_summary = tk.BooleanVar(win, value=bool(cfg.get("meetings_auto_summary", False)))
+        self._toggle(self._row(card, "Summarize after every transcription",
+                               "Uses the rewrite provider above. Runs only after you have allowed remote analysis once."),
+                     v_auto_summary).pack()
+        control = self._row(card, "Keep audio", "Text stays until you delete a meeting. Audio is needed for playback and re-transcription.", last=True)
+        v_retention, c_retention = self._combo(control, list(MEETING_RETENTION_LABELS.values()), width=26)
+        v_retention.set(MEETING_RETENTION_LABELS.get(cfg.get("meetings_retention"), MEETING_RETENTION_LABELS["days7"]))
+        c_retention.pack()
+
         # ---- footer actions -----------------------------------------
         def save():
             if saving[0]:
@@ -2183,6 +2334,24 @@ class SettingsWindow:
             new_cfg["remove_fillers"] = v_remove_fillers.get()
             new_cfg["filler_languages"] = [code for code, var in v_filler_languages.items() if var.get()]
             new_cfg["custom_fillers"] = ", ".join(normalize_vocabulary(e_custom_fillers.value()))
+            meeting_provider = meeting_audio_controls["selected"]()
+            new_cfg["meetings_audio_provider"] = meeting_provider
+            new_cfg["meetings_audio_api_key"] = meeting_audio_controls["api_key"].get().strip()
+            new_cfg["meetings_audio_endpoint"] = meeting_audio_controls["endpoint"].get().strip()
+            new_cfg["meetings_audio_model"] = meeting_audio_controls["model"].get().strip()
+            if meeting_provider in ("same", "orukeet"):
+                new_cfg["meetings_audio_api_key"] = ""
+                new_cfg["meetings_audio_endpoint"] = ""
+                new_cfg["meetings_audio_model"] = MODEL_ID if meeting_provider == "orukeet" else ""
+            elif not new_cfg["meetings_audio_endpoint"] or not new_cfg["meetings_audio_model"]:
+                messagebox.showwarning(APP_NAME, "Choose an endpoint and model for meeting transcription before saving.", parent=win)
+                self.show_page("meetings")
+                return
+            new_cfg["pyannote_api_key"] = e_pyannote.value().strip()
+            new_cfg["meetings_auto_speakers"] = v_auto_speakers.get()
+            new_cfg["meetings_auto_summary"] = v_auto_summary.get()
+            new_cfg["meetings_retention"] = next(
+                (key for key, label in MEETING_RETENTION_LABELS.items() if label == v_retention.get()), "days7")
             chosen_rewrite_hotkey = v_rewrite_hotkey.get()
             new_cfg["rewrite_hotkey"] = sanitize_rewrite_hotkey(chosen_rewrite_hotkey, new_cfg["hotkey"])
             if chosen_rewrite_hotkey != "off" and new_cfg["rewrite_hotkey"] == "off":
@@ -2319,6 +2488,204 @@ class OwnkeyApp:
         self._rewrite_capture_done = threading.Event()
         self._rewrite_capture_done.set()
         threading.Thread(target=self._transcription_loop, daemon=True, name="dictation").start()
+        self.meetings: MeetingService | None = None
+        self.meeting_server: MeetingServer | None = None
+        self._meetings_error = ""
+        self._start_meetings()
+
+    # ------------------------------------------------------------------
+    # Meetings
+    # ------------------------------------------------------------------
+
+    def _start_meetings(self) -> None:
+        """Meetings run beside dictation: a local library, a job worker and a
+        token-protected window on 127.0.0.1. If this fails, dictation still works."""
+        try:
+            self.meetings = MeetingService(
+                MeetingStore(), get_config=lambda: self.cfg, set_config=self._meeting_config_changed,
+                local_models=self.local_models, local_transcriber=self.local_transcriber,
+                get_local_audio=self._meeting_local_audio,
+                get_rewrite_key=get_rewrite_api_key, get_audio_key=get_effective_api_key, notify=self._notify_error,
+                open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
+                dictation_busy=lambda: bool(self._recording),
+                yield_to=lambda: bool(self._recording) or not self._transcription_queue.empty(),
+            )
+            self._meeting_seen_state = None
+            self.meeting_server = MeetingServer(self.meetings)
+            self.meeting_server.start()
+        except Exception as exc:
+            self.meetings = None
+            self.meeting_server = None
+            self._meetings_error = str(exc)
+
+    def _meeting_local_audio(self):
+        transcriber = self.local_transcriber
+        return transcriber.models, transcriber
+
+    def _meeting_config_changed(self, changes: dict) -> None:
+        with self._config_lock:
+            self.cfg.update(changes)
+            save_config(self.cfg)
+
+    def _meeting_capturing(self) -> bool:
+        meetings = getattr(self, "meetings", None)
+        return meetings is not None and meetings.is_capturing()
+
+    def _meeting_paused(self) -> bool:
+        capture = self.meetings.capture_state() if self._meeting_capturing() else None
+        return bool(capture and capture.get("state") == "paused")
+
+    def _meeting_capture_changed(self) -> None:
+        """Keep the tray icon honest and let the pill announce meeting transitions."""
+        if getattr(self, "_shutting_down", False):
+            return
+        self._set_state(self._state)
+        capture = self.meetings.capture_state() if self.meetings is not None else None
+        state = capture.get("state") if capture else "off"
+        previous = getattr(self, "_meeting_seen_state", None)
+        self._meeting_seen_state = state
+        if previous == state or self._recording:
+            return
+        messages = {
+            "recording": "Meeting recording" if previous in (None, "off") else "Meeting resumed",
+            "paused": "Meeting paused",
+            "stopped": "Meeting saved",
+            "interrupted": "Meeting interrupted",
+        }
+        message = messages.get(state) or ("Meeting saved" if state == "off" and previous in ("recording", "paused") else None)
+        if not message:
+            return
+        self._overlay.update(connection=self._connection_state, listening="ready", processing="idle",
+                             target=self._target_status(), level=0.0, message=message)
+        self._overlay.show()
+        self._ensure_tauri_overlay(resync=True)
+        self._overlay.hide_later(2200)
+
+    def _meeting_blocks_hotkeys(self) -> bool:
+        """During meeting capture the meeting owns the audio devices: the hotkeys
+        show the meeting status instead of starting dictation."""
+        if not self._meeting_capturing():
+            return False
+        capture = self.meetings.capture_state() or {}
+        elapsed = int(capture.get("elapsed", 0))
+        label = "Meeting paused" if capture.get("state") == "paused" else "Meeting recording"
+        self._overlay.update(
+            connection=self._connection_state, listening="ready", processing="idle",
+            target=self._target_status(), level=0.0,
+            message=f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}",
+        )
+        self._overlay.show()
+        self._ensure_tauri_overlay(resync=True)
+        self._overlay.hide_later(1600)
+        return True
+
+    def _open_meetings(self, icon=None, item=None) -> None:
+        self._open_meeting_window()
+
+    def _open_new_meeting(self, icon=None, item=None) -> None:
+        self._open_meeting_window(view="new")
+
+    def _open_meeting_window(self, view: str | None = None) -> None:
+        if self.meeting_server is None:
+            self._notify_error(f"Meetings could not start: {self._meetings_error or 'unknown error'}")
+            return
+        url = self.meeting_server.url + ("&view=new" if view == "new" else "")
+        threading.Thread(target=self._show_meeting_window, args=(url, view is not None), daemon=True).start()
+
+    def _show_meeting_window(self, url: str, navigate: bool) -> None:
+        """Meetings open in Ownkey's own window, hosted by the overlay process.
+        The default browser is the fallback when that process cannot answer."""
+        if not self._native_meeting_window(url + "&shell=app", navigate):
+            webbrowser.open(url)
+
+    def _native_meeting_window(self, url: str, navigate: bool) -> bool:
+        if not getattr(self, "_tauri_overlay_exe", None):
+            return False
+        try:
+            self._ensure_tauri_overlay()
+        except Exception as exc:
+            overlay_debug(f"overlay unavailable for the meeting window: {exc}")
+        deadline = time.monotonic() + MEETING_WINDOW_WAIT_SECONDS
+        while True:
+            self._allow_overlay_foreground()
+            status = request_meeting_window(url, navigate)
+            if status in ("opened", "focused"):
+                return True
+            if status is not None or time.monotonic() >= deadline:
+                return False  # refused or failed: asking again changes nothing
+            time.sleep(0.4)  # the overlay is still starting
+
+    def _allow_overlay_foreground(self) -> None:
+        """The tray click made this process the foreground one. Pass that on, or
+        Windows only flashes the meeting window in the taskbar."""
+        if os.name != "nt":
+            return
+        process = getattr(self, "_tauri_overlay_process", None)
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(process.pid if process else 0xFFFFFFFF)
+        except Exception:
+            pass
+
+    def _meeting_pause_resume(self, icon=None, item=None) -> None:
+        if not self._meeting_capturing():
+            return
+        try:
+            if self._meeting_paused():
+                self.meetings.resume()
+            else:
+                self.meetings.pause()
+        except Exception as exc:
+            self._notify_error(str(exc))
+
+    def _meeting_stop(self, icon=None, item=None) -> None:
+        if not self._meeting_capturing():
+            return
+
+        def stop():
+            try:
+                self.meetings.stop()
+                if self._tray:
+                    self._tray.notify("Meeting saved. Transcribing on this PC.", title=f"{APP_NAME} — Meetings")
+            except Exception as exc:
+                self._notify_error(str(exc))
+
+        threading.Thread(target=stop, daemon=True).start()
+
+    def _confirm_stop_meeting(self) -> bool:
+        """Quitting while a meeting records is an explicit choice: stop and save, or keep recording."""
+        capture = self.meetings.capture_state() or {}
+        title = capture.get("title") or "this meeting"
+        if os.name == "nt":
+            MB_YESNO, MB_ICONWARNING, MB_DEFBUTTON2, MB_TOPMOST, MB_SETFOREGROUND = 0x4, 0x30, 0x100, 0x40000, 0x10000
+            answer = ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Ownkey is recording “{title}”.\n\nStop the meeting and save it, then quit?\n\n"
+                "Yes: stop and save, then quit.\nNo: keep recording and stay open.",
+                f"{APP_NAME} — Meeting in progress",
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+            )
+            if answer != 6:  # IDYES
+                return False
+        try:
+            self.meetings.stop()
+        except Exception as exc:
+            self._notify_error(str(exc))
+        return True
+
+    def _build_tray_menu(self):
+        return Menu(
+            MenuItem("Meetings", Menu(
+                MenuItem("Open Meetings", self._open_meetings, default=True),
+                MenuItem("New meeting", self._open_new_meeting),
+                Menu.SEPARATOR,
+                MenuItem(lambda item: "Resume meeting" if self._meeting_paused() else "Pause meeting",
+                         self._meeting_pause_resume, visible=lambda item: self._meeting_capturing()),
+                MenuItem("Stop meeting and save", self._meeting_stop, visible=lambda item: self._meeting_capturing()),
+            ), visible=lambda item: self.meetings is not None),
+            MenuItem("Settings", self._open_settings),
+            Menu.SEPARATOR,
+            MenuItem("Quit", self._quit),
+        )
 
     def local_audio_at(self, directory):
         """Keep each location alive while recordings and downloads still use it."""
@@ -2394,8 +2761,12 @@ class OwnkeyApp:
             "processing": f"{APP_NAME} — Processing...",
         }
         tooltip = labels.get(state, APP_NAME)
+        icon_state = state
+        if state == "idle" and self._meeting_capturing():
+            icon_state = "recording"
+            tooltip = f"{APP_NAME} — Meeting {'paused' if self._meeting_paused() else 'recording'}"
         if self._tray:
-            self._tray.icon = make_icon(state)
+            self._tray.icon = make_icon(icon_state)
             self._tray.title = tooltip
         if state == "processing":
             message = "Rewriting..." if self._record_mode == "rewrite" else "Transcribing..."
@@ -2485,6 +2856,8 @@ class OwnkeyApp:
             return  # debounce repeated key-down events
         mode = self._hotkey_mode_for(key)
         if mode is None:
+            return
+        if self._meeting_blocks_hotkeys():
             return
         self._down = True
         self._start_recording(mode)
@@ -2968,6 +3341,8 @@ class OwnkeyApp:
         self._ui_commands.put("settings")
 
     def _quit(self, icon=None, item=None) -> None:
+        if self._meeting_capturing() and not self._confirm_stop_meeting():
+            return
         self._ui_commands.put("quit")
 
     def _poll_ui_commands(self) -> None:
@@ -2989,6 +3364,17 @@ class OwnkeyApp:
     def _shutdown(self) -> None:
         self._shutting_down = True
         self._recording = False
+        if getattr(self, "meeting_server", None) is not None:
+            try:
+                self.meeting_server.stop()
+            except Exception:
+                pass
+        if getattr(self, "meetings", None) is not None:
+            # Stop and save any running capture; transcription resumes on the next start.
+            try:
+                self.meetings.close()
+            except Exception:
+                pass
         self._settings._on_close()
         if self._listener:
             try:
@@ -3067,11 +3453,7 @@ class OwnkeyApp:
                 APP_NAME, "Keyboard setup is incomplete.\n\n" + error, parent=self._ui_root))
 
         icon_image = make_icon("idle")
-        menu = Menu(
-            MenuItem("Settings", self._open_settings),
-            Menu.SEPARATOR,
-            MenuItem("Quit", self._quit),
-        )
+        menu = self._build_tray_menu()
         self._tray = pystray.Icon(
             APP_NAME,
             icon=icon_image,
@@ -3079,6 +3461,12 @@ class OwnkeyApp:
             menu=menu,
         )
         self._tray.run_detached()
+        if self.meetings is not None and self.meetings.interrupted_on_start:
+            self._ui_root.after(1500, lambda: self._tray and self._tray.notify(
+                "A meeting was interrupted last time. Open Meetings to transcribe what was saved.",
+                title=f"{APP_NAME} — Meetings"))
+        if "--meetings" in sys.argv:
+            self._open_meetings()
         if "--settings" in sys.argv or (sys.platform.startswith("linux")
                 and provider_requires_key(audio_provider, audio_endpoint)
                 and not get_effective_api_key(self.cfg)):
@@ -3105,6 +3493,9 @@ if __name__ == "__main__":
     if "--local-smoke-test" in sys.argv:
         from local_transcription import run_smoke_test
         sys.exit(run_smoke_test(sys.argv[sys.argv.index("--local-smoke-test") + 1:]))
+    if "--ui-smoke-test" in sys.argv:
+        sys.exit(brand_ui.run_smoke_test(sys.argv[sys.argv.index("--ui-smoke-test") + 1:],
+                                         resource_path("assets", "fonts")))
     instance = linux_desktop.SingleInstance() if sys.platform.startswith("linux") else None
     if instance and not instance.acquire():
         instance.activate()

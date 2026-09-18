@@ -93,6 +93,67 @@ class SettingsLifecycleTests(unittest.TestCase):
         self.assertEqual(changes["filler_languages"], ["en", "nl"])
         self.assertEqual(self.errors, [])
 
+    def _visible_dropdowns(self):
+        return [child for child in descendants(self.app._settings._win)
+                if isinstance(child, ownkey.ttk.Combobox) and child.winfo_ismapped()
+                and str(child.cget("state")) == "readonly"]
+
+    def test_a_click_opens_every_dropdown_list(self):
+        self.app._settings.open()
+        root = self.app._ui_root
+        opened = 0
+        for page in ("dictation", "transcription", "rewriting", "meetings"):
+            self.app._settings.show_page(page)
+            root.update()
+            for dropdown in self._visible_dropdowns():
+                dropdown.event_generate("<Button-1>", x=20, y=dropdown.winfo_height() // 2)
+                dropdown.event_generate("<ButtonRelease-1>", x=20, y=dropdown.winfo_height() // 2)
+                root.update()
+                popdown = f"{dropdown}.popdown"
+                self.assertTrue(int(root.tk.call("winfo", "exists", popdown)), f"{page}: no list for {dropdown.get()!r}")
+                self.assertTrue(int(root.tk.call("winfo", "ismapped", popdown)), f"{page}: list stayed hidden")
+                self.assertEqual(int(root.tk.call(f"{popdown}.f.l", "size")), len(dropdown.cget("values")))
+                root.tk.call("ttk::combobox::Unpost", dropdown)
+                root.update()
+                opened += 1
+        self.assertGreaterEqual(opened, 5)
+        self.assertEqual(self.errors, [])
+
+    def test_the_wheel_scrolls_the_page_and_never_changes_a_field(self):
+        self.app._settings.open()
+        self.app._settings.show_page("transcription")
+        root = self.app._ui_root
+        root.update()
+        dropdown = self._visible_dropdowns()[0]
+        before = dropdown.get()
+        for delta in (-120, -120, 120):
+            dropdown.event_generate("<MouseWheel>", delta=delta)
+        root.update()
+        self.assertEqual(dropdown.get(), before)
+        dropdown.event_generate("<Enter>")
+        root.update()
+        self.assertEqual(str(dropdown.cget("cursor")), "hand2")
+
+    def test_dropdowns_keep_their_chevron_when_settings_reopens(self):
+        import gc
+        root = self.app._ui_root
+        self.app._settings.open()
+        root.update()
+        bindings = root.bind_class("TCombobox", "<Enter>")
+        self.app._settings._on_close()
+        gc.collect()
+        self.app._settings.open()
+        self.app._settings.show_page("transcription")
+        root.update()
+        names = root.tk.call("image", "names")
+        for image in root._ownkey_chevrons.values():
+            self.assertIn(str(image), names, "the chevron image died with the first window")
+        dropdown = self._visible_dropdowns()[0]
+        self.assertEqual(dropdown.identify(dropdown.winfo_width() - 14, dropdown.winfo_height() // 2),
+                         "Ownkey.Combobox.chevron")
+        self.assertEqual(root.bind_class("TCombobox", "<Enter>"), bindings, "class bindings must not pile up")
+        self.assertEqual(self.errors, [])
+
     def test_close_during_model_refresh_does_not_touch_destroyed_widgets(self):
         with patch.object(ownkey, "list_available_models", side_effect=lambda *a: (time.sleep(.1) or ["test"])):
             self.app._settings.open()
@@ -135,10 +196,103 @@ class EntryWidgetTests(unittest.TestCase):
         self.assertFalse(entry._placeholder.winfo_manager())
 
 
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Requires a desktop session")
+class BrandWidgetTests(unittest.TestCase):
+    def setUp(self):
+        self.root = ownkey.tk.Tk()
+        self.root.withdraw()
+        self.ui = ownkey.brand_ui
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def test_option_database_fonts_keep_a_family_with_spaces_together(self):
+        self.assertEqual(self.ui.font_option(("Segoe UI", 10)), "{Segoe UI} 10")
+        self.assertEqual(self.ui.font_option(("Segoe UI", 10, "bold")), "{Segoe UI} 10 bold")
+        self.ui.style_ttk(self.root, self.ui.Type(self.root))
+        dropdown = ownkey.ttk.Combobox(self.root, values=("a", "b"), state="readonly")
+        dropdown.pack()
+        self.root.update()
+        popdown = self.root.tk.call("ttk::combobox::PopdownWindow", dropdown)  # raised TclError before
+        family = self.root.tk.call("font", "actual", self.root.tk.call(f"{popdown}.f.l", "cget", "-font"), "-family")
+        self.assertEqual(family, self.ui.Type(self.root).body[0])
+
+    def test_rounded_shapes_are_antialiased_images(self):
+        image = self.ui.smooth_image(self.root, 40, 20, self.ui.KEY, [(1, 1, 39, 19, 9, self.ui.BONE, "")])
+        self.assertEqual((image.width(), image.height()), (40, 20))
+        rgb = lambda color: tuple(channel // 257 for channel in self.root.winfo_rgb(color))
+        pixel = lambda x, y: tuple(image.get(x, y))
+        self.assertEqual(pixel(0, 0), rgb(self.ui.KEY))
+        self.assertEqual(pixel(20, 10), rgb(self.ui.BONE))
+        self.assertEqual(pixel(20, 1), rgb(self.ui.BONE), "straight edges stay sharp")
+        corner = {pixel(x, y) for x in range(1, 8) for y in range(1, 8)}
+        self.assertGreater(len(corner - {rgb(self.ui.KEY), rgb(self.ui.BONE)}), 3, "the curve blends")
+
+        button = self.ui.Button(self.root, "Save", variant="solid")
+        toggle = self.ui.Toggle(self.root, ownkey.tk.BooleanVar(self.root, value=True))
+        for widget in (button, toggle):
+            widget.pack()
+        self.root.update()
+        self.assertEqual(button.type(button.find_all()[0]), "image")
+        self.assertEqual(button.type(button.find_all()[-1]), "text")
+        self.assertEqual([toggle.type(item) for item in toggle.find_all()], ["image"])
+        button.configure(state="disabled")
+        button._set_hover(True)
+        self.assertLessEqual(len(button._images), 3)
+
+    def test_shapes_fall_back_to_canvas_polygons_without_pillow(self):
+        with patch.object(self.ui, "Image", None):
+            self.assertIsNone(self.ui.smooth_image(self.root, 10, 10, self.ui.KEY))
+            button = self.ui.Button(self.root, "Cancel")
+            button.pack()
+            self.root.update()
+            self.assertEqual(button.type(button.find_all()[0]), "polygon")
+        with patch.object(self.ui, "_render", side_effect=KeyError("PNG")):  # a broken Pillow
+            self.assertIsNone(self.ui.smooth_image(self.root, 10, 10, self.ui.KEY))
+            toggle = self.ui.Toggle(self.root, ownkey.tk.BooleanVar(self.root, value=False))
+            toggle.pack()
+            self.root.update()
+            self.assertEqual([toggle.type(item) for item in toggle.find_all()], ["polygon", "oval"])
+
+    def test_dropdowns_are_as_tall_as_text_fields(self):
+        type_ = self.ui.Type(self.root)
+        self.ui.style_ttk(self.root, type_)
+        dropdown = ownkey.ttk.Combobox(self.root, values=("a",), state="readonly", font=type_.body)
+        entry = self.ui.Entry(self.root, font=type_.body)
+        for widget in (dropdown, entry):
+            widget.pack()
+        self.root.update()
+        self.assertEqual(dropdown.winfo_reqheight(), entry.winfo_reqheight())
+
+    def test_ui_smoke_test_reports_the_widget_kit(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, "ui.json")
+            self.root.destroy()  # the smoke test owns its own root
+            try:
+                code = self.ui.run_smoke_test(["--output", output])
+            finally:
+                self.root = ownkey.tk.Tk()
+                self.root.withdraw()
+            with open(output, encoding="utf-8") as handle:
+                report = json.load(handle)
+        self.assertEqual(code, 0, report)
+        self.assertEqual((report["button_shape"], report["card_corners"], report["dropdown_items"]), ("image", 4, 3))
+
+    def test_scrollbars_are_wide_enough_to_see(self):
+        self.ui.style_ttk(self.root, self.ui.Type(self.root))
+        for style, width in (("Ownkey.Vertical.TScrollbar", 6), ("Vertical.TScrollbar", 8)):
+            bar = ownkey.ttk.Scrollbar(self.root, orient="vertical", style=style)
+            bar.pack()
+            self.root.update()
+            self.assertEqual(bar.winfo_reqwidth(), width, style)
+
+
 @unittest.skipUnless(os.name == "nt", "Windows process management")
 class OverlayProcessTests(unittest.TestCase):
     def test_application_closes_settings_and_background_workers_on_quit(self):
         code = """
+import os
 import tempfile
 from unittest.mock import Mock, patch
 import ownkey
@@ -148,7 +302,10 @@ with tempfile.TemporaryDirectory() as directory, \
         patch.object(ownkey, 'is_startup_enabled', return_value=True), \
         patch.object(ownkey, 'LocalModelManager', side_effect=lambda **kwargs: manager_type(directory)), \
         patch.object(ownkey.pystray, 'Icon', return_value=Mock()):
+    os.environ['OWNKEY_MEETINGS_LIBRARY'] = os.path.join(directory, 'meetings')  # never the real library
     app = ownkey.OwnkeyApp()
+    assert app.meetings is not None, app._meetings_error
+    assert str(app.meetings.store.root).startswith(directory), app.meetings.store.root
     app._overlay = Mock()
     app._tauri_overlay_exe = None
     app._open_settings()
