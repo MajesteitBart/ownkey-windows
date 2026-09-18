@@ -143,6 +143,56 @@ class ChunkedPlaybackTests(unittest.TestCase):
 
 
 class DeletionTests(unittest.TestCase):
+    def test_failed_delete_allows_new_jobs_without_reviving_cancelled_provider_calls(self):
+        for operation in ('transcribe', 'summarize', 'draft', 'label_speakers'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                started, release = threading.Event(), threading.Event()
+                calls = []
+                def provider(*args, **kwargs):
+                    calls.append(True)
+                    if len(calls) == 1:
+                        started.set()
+                        if not release.wait(5):
+                            raise RuntimeError('Test did not release cancelled provider')
+                        return [] if operation == 'label_speakers' else 'Cancelled output must not be saved.'
+                    if operation == 'label_speakers':
+                        return []
+                    return json.dumps({'overview': 'Synthetic new output.', 'decisions': [], 'actions': [], 'questions': []})
+                class Diarizer:
+                    diarize_wav = staticmethod(provider)
+                store = MeetingStore(directory)
+                service = MeetingService(store, get_config=lambda: {
+                    'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'synthetic',
+                    'meetings_audio_endpoint': 'https://example.invalid/audio', 'meetings_audio_api_key': 'synthetic',
+                    'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid/text',
+                    'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic', 'pyannote_api_key': 'synthetic'},
+                    cloud_transcriber=provider, chat=provider, diarizer_factory=lambda cfg: Diarizer())
+                try:
+                    mid = store.create_meeting('Synthetic cancelled job test', {'mic': {}})['id']
+                    store.update_meeting(mid, state='stopped')
+                    path = store.audio_dir(mid, 'mic') / 'locked.wav'
+                    audio.write_wav(path, np.full(16000, 3000, dtype=np.int16))
+                    store.add_chunk(mid, 'mic', 0, 0, 16000, str(path))
+                    store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
+                                                 'start': 0, 'end': 1, 'text': 'Synthetic saved source.'}])
+                    old = getattr(service, operation)(mid, remote_ok=True)
+                    self.assertTrue(started.wait(3))
+                    with patch('meetings.service.shutil.rmtree', side_effect=PermissionError('Synthetic file lock')):
+                        with self.assertRaises(MeetingError):
+                            service.delete_meeting(mid)
+                    self.assertEqual(store.get_job(old['id'])['state'], 'cancelled')
+                    fresh = getattr(service, operation)(mid, remote_ok=True)
+                    self.assertNotEqual(old['id'], fresh['id'])
+                    release.set()
+                    self.assertTrue(wait_for(lambda: store.get_job(fresh['id'])['state'] in ('done', 'error', 'cancelled')))
+                    self.assertEqual(store.get_job(old['id'])['state'], 'cancelled')
+                    self.assertEqual(store.get_job(fresh['id'])['state'], 'done')
+                    self.assertGreaterEqual(len(calls), 2)
+                    self.assertNotIn('Cancelled output', json.dumps(store.list_passages(mid) + store.list_analyses(mid)))
+                finally:
+                    release.set()
+                    service.close()
+
     def test_failed_disk_deletion_keeps_metadata_and_can_be_retried(self):
         for operation in ('audio', 'meeting', 'retention'):
             with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:

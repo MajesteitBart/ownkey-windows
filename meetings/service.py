@@ -239,15 +239,16 @@ class MeetingService:
                                 cfg.get("rewrite_endpoint", ""), cfg.get("rewrite_model", ""),
                                 system, user, timeout=180, max_tokens=max_tokens)
 
-    def _chat_call(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
+    def _chat_call(self, cfg: dict, system: str, user: str, max_tokens: int, *, should_stop=None) -> str:
         """One model call; a reply cut off at the output limit is retried once
         with double the budget (reasoning models spend hidden tokens)."""
-        if self._closed:
+        stopped = lambda: self._closed or (should_stop is not None and should_stop())
+        if stopped():
             raise MeetingError('Ownkey closed before processing finished.')
         try:
             return self._chat(cfg, system, user, max_tokens)
         except Exception as exc:
-            if self._closed or "output limit" not in str(exc).lower():
+            if stopped() or "output limit" not in str(exc).lower():
                 raise
             return self._chat(cfg, system, user, max_tokens * 2)
 
@@ -572,7 +573,13 @@ class MeetingService:
         if live:
             live.join()
             self._live.pop(meeting_id, None)
-        self._remove_directory(self.store.meeting_dir(meeting_id))
+        try:
+            self._remove_directory(self.store.meeting_dir(meeting_id))
+        except MeetingError:
+            # Existing jobs remain cancelled, but the retained meeting can be
+            # processed again without restarting after a failed deletion.
+            self._cancelled.discard(meeting_id)
+            raise
         self.store.delete_meeting(meeting_id)
 
     # ── jobs ───────────────────────────────────────────────────────
@@ -777,6 +784,10 @@ class MeetingService:
         self._enqueue(job, cfg)
         return job
 
+    def _job_cancelled(self, job: dict) -> bool:
+        current = self.store.get_job(job['id'])
+        return job['meeting_id'] in self._cancelled or current is None or current['state'] == 'cancelled'
+
     def _run_speakers(self, job: dict) -> bool | None:
         meeting_id = job["meeting_id"]
         meeting = self.store.get_meeting(meeting_id)
@@ -792,7 +803,7 @@ class MeetingService:
         available = self.speaker_tracks_available(meeting_id)
         targets = [t for t in targets if t in available] or self._speaker_targets(meeting_id, meeting)
         passages = self.store.list_passages(meeting_id)
-        should_stop = lambda: meeting_id in self._cancelled or self._closed
+        should_stop = lambda: self._job_cancelled(job) or self._closed
         incremental = bool(self.store.live_options(meeting_id))
         found = []
         for source in targets:
@@ -844,7 +855,7 @@ class MeetingService:
             if self._closed:
                 self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
                 continue
-            if job["meeting_id"] in self._cancelled:
+            if self._job_cancelled(job):
                 self.store.update_job(job_id, state="cancelled")
                 continue
             self._running_job = {"id": job_id, "kind": job["kind"], "meeting_id": job["meeting_id"]}
@@ -860,7 +871,7 @@ class MeetingService:
                     completed = self._run_speakers(job)
                 else:
                     raise MeetingError(f"Unknown job {job['kind']}")
-                if job["meeting_id"] in self._cancelled:
+                if self._job_cancelled(job):
                     self.store.update_job(job_id, state="cancelled")
                 elif self._closed and not completed:
                     self.store.update_job(job_id, state='interrupted', detail='Ownkey closed before processing finished')
@@ -871,7 +882,7 @@ class MeetingService:
                     if job['kind'] in ('transcribe', 'speakers'):
                         self.sweep_retention()
             except Exception as exc:
-                if job["meeting_id"] in self._cancelled:
+                if self._job_cancelled(job):
                     self.store.update_job(job_id, state="cancelled")
                     continue
                 if self._closed:
@@ -913,7 +924,7 @@ class MeetingService:
                 return (self._cloud_transcriber(engine, key, wav_bytes, language, vocabulary), [], [], [])
 
             where = f"{engine['label']} ({'remote' if engine['remote'] else 'local endpoint'})"
-        decode = self._yielding(decode, meeting_id)
+        decode = self._yielding(decode, job)
         try:
             # Keep an existing transcript and its edits until the complete
             # replacement can be committed in one store transaction.
@@ -926,7 +937,7 @@ class MeetingService:
             total_seconds = max(1e-6, sum(totals.values()))
             done_before = 0.0
             tracks = {}
-            should_stop = lambda: meeting_id in self._cancelled or self._closed
+            should_stop = lambda: self._job_cancelled(job) or self._closed
             for source, chunks in chunks_by_source.items():
                 self.store.ensure_speaker(meeting_id, source, source, SOURCE_LABELS.get(source, source))
                 samples = audio.concat_chunks(chunks)
@@ -976,16 +987,16 @@ class MeetingService:
             if not info["remote"] or cfg.get("meetings_remote_policy") == "allow":
                 self._enqueue(self.store.create_job(meeting_id, "summary", json.dumps({"include_notes": False})), cfg)
 
-    def _yielding(self, decode, meeting_id: str, *, max_wait: float = 120.0):
+    def _yielding(self, decode, job: dict, *, max_wait: float = 120.0):
         """Wrap a window decoder so it waits, between windows, while dictation
         is recording or has audio waiting; a meeting never delays typing."""
 
         def wrapped(wav_bytes):
             waited = 0.0
-            while self._yield_to() and waited < max_wait and meeting_id not in self._cancelled and not self._closed:
+            while self._yield_to() and waited < max_wait and not self._job_cancelled(job) and not self._closed:
                 time.sleep(0.1)
                 waited += 0.1
-            if meeting_id in self._cancelled or self._closed:
+            if self._job_cancelled(job) or self._closed:
                 return '', [], [], []
             return decode(wav_bytes)
 
@@ -1008,8 +1019,9 @@ class MeetingService:
         notes = self.store.get_notes(meeting_id)["content"] if include_notes else None
         summary = analysis.generate_summary(
             self.store.list_passages(meeting_id), self.store.list_speakers(meeting_id),
-            lambda system, user, max_tokens: self._chat_call(cfg, system, user, max_tokens), notes=notes)
-        if meeting_id in self._cancelled:
+            lambda system, user, max_tokens: self._chat_call(cfg, system, user, max_tokens,
+                    should_stop=lambda: self._job_cancelled(job)), notes=notes)
+        if self._job_cancelled(job):
             return
         self.store.add_analysis(meeting_id, "summary", provider=info["provider"], model=info["model"],
                                 input_rev=meeting["transcript_rev"], include_notes=include_notes,
@@ -1032,8 +1044,9 @@ class MeetingService:
             except ValueError:
                 summary = None
         text = analysis.draft_followup(summary, self.store.list_passages(meeting_id), self.store.list_speakers(meeting_id),
-                                       lambda system, user, max_tokens: self._chat_call(cfg, system, user, max_tokens))
-        if meeting_id in self._cancelled:
+                                       lambda system, user, max_tokens: self._chat_call(cfg, system, user, max_tokens,
+                    should_stop=lambda: self._job_cancelled(job)))
+        if self._job_cancelled(job):
             return
         self.store.add_analysis(meeting_id, "draft", provider=info["provider"], model=info["model"],
                                 input_rev=meeting["transcript_rev"], include_notes=False, content=text,
