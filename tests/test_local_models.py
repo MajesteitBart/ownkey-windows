@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -80,6 +81,91 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(manager.snapshot().stage, "Error")
         self.assertFalse(manager.path.exists())
         self.assertEqual(list(manager.path.parent.iterdir()), [])
+
+    def release_manager(self, *, metadata=None, mutate=None):
+        model, archive, _ = fixture()
+        release = {
+            "archive": "model", "archive_bytes": model.archive_size,
+            "archive_sha256": model.archive_sha256, "extract_dir": model.archive_root,
+            "files": [{"path": f.name, "bytes": f.size, "sha256": f.sha256}
+                      for f in model.files],
+        }
+        release.update(metadata or {})
+        data = json.dumps(release).encode()
+        model = replace(model, manifest=ModelFile("manifest.json", len(data),
+                        hashlib.sha256(data).hexdigest()),
+                        manifest_url="https://test.invalid/manifest.json")
+        requests = []
+        def get(url, **_kwargs):
+            requests.append(url)
+            if url == model.manifest_url:
+                return Response(mutate(data) if mutate else data)
+            self.assertEqual(url, model.url)
+            return Response(archive)
+        manager = LocalModelManager(self.directory.name, model, http_get=get)
+        self.addCleanup(manager.close)
+        return manager, requests
+
+    def test_release_manifest_is_verified_before_archive_and_not_needed_offline(self):
+        manager, requests = self.release_manager()
+        self.finish(manager)
+        self.assertEqual(manager.snapshot().stage, "Installed")
+        self.assertEqual(requests, [manager.model.manifest_url, manager.model.url])
+        with patch.object(manager, "_get") as get:
+            manager.check_installation()
+            manager.validate()
+            with self.assertRaisesRegex(ModelError, "already downloaded"):
+                manager.start_download()
+        get.assert_not_called()
+        self.assertEqual(manager.snapshot().stage, "Installed")
+
+    def test_corrupt_or_incomplete_manifest_never_downloads_archive(self):
+        for mutate in [lambda data: b"x" + data[1:], lambda data: data[:-1],
+                       lambda data: data + b"x"]:
+            with self.subTest(mutate=mutate):
+                manager, requests = self.release_manager(mutate=mutate)
+                self.finish(manager)
+                self.assertEqual(manager.snapshot().stage, "Error")
+                self.assertIn("manifest", manager.snapshot().error)
+                self.assertEqual(requests, [manager.model.manifest_url])
+                self.assertFalse(manager.path.exists())
+                self.assertEqual(list(manager.path.parent.iterdir()), [])
+
+    def test_manifest_must_describe_the_selected_archive_and_files(self):
+        for metadata in [{"archive": "other.tar.bz2"}, {"archive_bytes": 1},
+                         {"archive_sha256": "0" * 64}, {"extract_dir": "other"},
+                         {"files": []}]:
+            with self.subTest(metadata=metadata):
+                manager, requests = self.release_manager(metadata=metadata)
+                self.finish(manager)
+                self.assertEqual(manager.snapshot().stage, "Error")
+                self.assertIn("selected model", manager.snapshot().error)
+                self.assertEqual(requests, [manager.model.manifest_url])
+                self.assertFalse(manager.path.exists())
+
+    def test_cancel_during_manifest_does_not_start_archive(self):
+        manager, requests = self.release_manager()
+        original_get = manager._get
+        def get(*args, **kwargs):
+            response = original_get(*args, **kwargs)
+            manager.cancel()
+            return response
+        manager._get = get
+        self.finish(manager)
+        self.assertEqual(manager.snapshot().stage, "Cancelled")
+        self.assertEqual(requests, [manager.model.manifest_url])
+        self.assertFalse(manager.path.exists())
+
+    def test_manifest_network_error_does_not_start_archive(self):
+        manager, requests = self.release_manager()
+        def get(url, **_kwargs):
+            requests.append(url)
+            raise OSError("manifest endpoint unavailable")
+        manager._get = get
+        self.finish(manager)
+        self.assertEqual(manager.snapshot().stage, "Error")
+        self.assertEqual(requests, [manager.model.manifest_url])
+        self.assertFalse(manager.path.exists())
 
     def test_file_hash_is_also_checked(self):
         model, archive, _ = fixture()

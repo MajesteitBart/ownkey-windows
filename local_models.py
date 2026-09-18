@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import queue
@@ -38,6 +39,8 @@ class Model:
     files: tuple[ModelFile, ...]
     file_urls: tuple[str, ...] = ()
     label: str = ""
+    manifest: ModelFile | None = None
+    manifest_url: str = ""
 
     @property
     def extracted_size(self):
@@ -58,6 +61,8 @@ ORUKEET = Model(
         ModelFile("LICENSE-WEIGHTS", 20137, "23ee78c8bae49cf08ea2f0c84945c66b987ebe4520881fb51b3dad4fb43d07c2"),
         ModelFile("NOTICE.md", 5271, "440361d963edd9621e744f251332b47f2c4de2e2594ecfe42b215e3f6223fa44"),
     ),
+    manifest=ModelFile("manifest.json", 1867, "7e80f93f0e9b923c392424b0f85d28a717feee0a4d2a6aa9bfa723693868e727"),
+    manifest_url=f"https://huggingface.co/oruk/orukeet/resolve/{REVISION}/onnx/manifest.json",
 )
 CATALOG = {MODEL_ID: ORUKEET}
 BUSY_STAGES = {"Downloading", "Verifying", "Extracting"}
@@ -284,6 +289,36 @@ class LocalModelManager:
         if seen != set(expected):
             raise ModelError("The model archive is incomplete.")
 
+    def _archive_release(self):
+        """Verify the publisher's pinned release before acquiring its archive."""
+        spec = self.model.manifest
+        if spec is None:
+            return self.model.archive_size, self.model.archive_sha256
+        data = bytearray()
+        self._check_cancel()
+        with self._get(self.model.manifest_url, stream=True, timeout=(10, 10)) as response:
+            response.raise_for_status()
+            for block in response.iter_content(CHUNK_SIZE):
+                self._check_cancel()
+                if len(data) + len(block) > spec.size:
+                    raise ModelError("Model release manifest exceeds its pinned size.")
+                data.extend(block)
+        self._check_cancel()
+        if len(data) != spec.size or hashlib.sha256(data).hexdigest() != spec.sha256:
+            raise ModelError("Model release manifest checksum does not match.")
+        manifest = json.loads(data)
+        expected = {
+            "archive": self.model.url.rsplit("/", 1)[-1],
+            "archive_bytes": self.model.archive_size,
+            "archive_sha256": self.model.archive_sha256,
+            "extract_dir": self.model.archive_root,
+            "files": [{"path": f.name, "bytes": f.size, "sha256": f.sha256}
+                      for f in self.model.files],
+        }
+        if not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in expected.items()):
+            raise ModelError("Model release manifest does not match the selected model.")
+        return manifest["archive_bytes"], manifest["archive_sha256"]
+
     def _download(self):
         temporary = None
         backup = None
@@ -292,6 +327,7 @@ class LocalModelManager:
             required = self.model.archive_size + self.model.extracted_size + 64 * 1024 * 1024
             if shutil.disk_usage(self.path.parent).free < required:
                 raise ModelError("Not enough disk space. Free at least 1.2 GB for the download and extraction.")
+            archive_size, archive_sha256 = self._archive_release()
             temporary = Path(tempfile.mkdtemp(prefix=".download-", dir=self.path.parent))
             archive = temporary / "model.tar.bz2"
             count = 0
@@ -301,12 +337,12 @@ class LocalModelManager:
                     for block in response.iter_content(CHUNK_SIZE):
                         self._check_cancel()
                         count += len(block)
-                        if count > self.model.archive_size:
+                        if count > archive_size:
                             raise ModelError("Model archive exceeds its pinned size.")
                         target.write(block)
-                        self._publish("Downloading", count, self.model.archive_size)
+                        self._publish("Downloading", count, archive_size)
             self._publish("Verifying")
-            if count != self.model.archive_size or self._hash(archive, cancellable=True) != self.model.archive_sha256:
+            if count != archive_size or self._hash(archive, cancellable=True) != archive_sha256:
                 raise ModelError("Model archive checksum does not match. Try downloading again.")
             staging = temporary / "staging"
             staging.mkdir()
