@@ -9,6 +9,10 @@ questions, and follow-up drafts.
 
 ## Recommended model decision
 
+Update, 25 September 2026: speaker labels shipped with NVIDIA Nemotron 3
+Diarization on the PC, run through NeMo-Speech.cpp, instead of pyannote. See
+[MEETINGS_IMPLEMENTATION.md](MEETINGS_IMPLEMENTATION.md).
+
 Use the existing **Orukeet** integration for transcription. Add a separate,
 optional diarization engine for automatic speaker labels. Use a text model for
 summaries and drafting. These are three different jobs.

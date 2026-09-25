@@ -25,6 +25,10 @@ class SettingsLifecycleTests(unittest.TestCase):
         self.model_directory = tempfile.TemporaryDirectory()
         self.app.local_models = ownkey.LocalModelManager(self.model_directory.name)
         self.app.local_transcriber = ownkey.LocalTranscriber(self.app.local_models, start_timer=False)
+        self.speaker_directory = tempfile.TemporaryDirectory()
+        self.app.speaker_models = ownkey.LocalModelManager(model=ownkey.NEMOTRON_DIARIZATION,
+                                                           directory=self.speaker_directory.name)
+        self.app.local_diarizer = ownkey.LocalDiarizer(self.app.speaker_models, runtime=lambda: None)
         self.app._ui_root = ownkey.tk.Tk()
         self.app._ui_root.withdraw()
         self.app._ui_commands = queue.Queue()
@@ -39,6 +43,7 @@ class SettingsLifecycleTests(unittest.TestCase):
         self.app._ui_root.destroy()
         self.app.local_transcriber.close()
         self.model_directory.cleanup()
+        self.speaker_directory.cleanup()
 
     def test_rewrite_menu_keeps_openrouter_and_custom_but_excludes_orukeet(self):
         self.app._settings.open()

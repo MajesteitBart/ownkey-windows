@@ -65,21 +65,24 @@ usable slice, not the whole spec.
   runs. If Orukeet is not installed the job fails with a message and the
   meeting keeps its audio; there is no download and no cloud transcription
   for meetings.
-- **Speaker labels through pyannoteAI** (`precision-2`, exclusive
-  diarization). "Add speaker labels" in the Transcript tab asks which tracks
-  have several people: call audio only (default), call audio plus the
-  microphone (several people around one PC), or the microphone only. New
-  meeting has a "several people share this microphone" option that sets the
-  default. Each chosen track is uploaded to api.pyannote.ai; the job is
-  polled; every token gets the speaker whose segment overlaps it most;
-  passages split where the speaker changes; speakers are numbered
-  Speaker 1, Speaker 2, … across all labelled tracks (never two Speaker 1s)
-  until you confirm names, and confirmed names survive relabelling. The first upload shows a
-  disclosure (what is sent, what is not, pyannoteAI deletes uploads within 48
-  hours and results within 24 hours, no training); "Don't ask again" stores
-  `meetings_upload_policy = allow`. The key lives in Settings › Meetings
-  (`pyannote_api_key`, or the `PYANNOTEAI_API_KEY` environment variable).
-  Local diarization is not offered: it needs a GPU-class machine.
+- **Speaker labels on this PC** with NVIDIA Nemotron 3 Diarization
+  (`local_diarization.py`). "Add speaker labels" in the Transcript tab asks
+  which tracks have several people: call audio only (default), call audio
+  plus the microphone (several people around one PC), or the microphone
+  only. New meeting has a "several people share this microphone" option
+  that sets the default. Each chosen track goes through NeMo-Speech.cpp's
+  diarizer with its 30.4-second "v3-offline" geometry, read in 30-second
+  blocks. Where two speakers' segments overlap, the one with the higher
+  probability in that 10 ms frame keeps it, so labels are exclusive. Every
+  word, with its subword pieces and punctuation, gets the speaker whose
+  segment overlaps it most; passages split where the speaker changes;
+  speakers are numbered Speaker 1, Speaker 2, … across all labelled tracks
+  (never two Speaker 1s) until you confirm names, and confirmed names
+  survive relabelling. Nothing is uploaded, so there is no disclosure. The
+  model is a 107 MB download in Settings › Meetings; without it, passages
+  keep their source labels. The runtime DLLs ship in the installer under
+  `nemo_speech/`, built by `scripts/Build-NemoSpeechRuntime.ps1` for CPUs
+  with AVX2. Ownkey checks for AVX2 before loading them.
 - **Review**: My thoughts (autosaved notes, timestamp insertion), Transcript
   (search, playback of both tracks, inline corrections kept as a separate
   revision next to the recognition text, speaker rename and confirmation,
@@ -119,14 +122,15 @@ usable slice, not the whole spec.
 | Key | Default | Meaning |
 |---|---|---|
 | `meetings_remote_policy` | `ask` | `allow` skips the disclosure for remote text models |
-| `meetings_upload_policy` | `ask` | `allow` skips the disclosure for uploading audio to pyannoteAI |
 | `meetings_transcription_policy` | `ask` | `allow` skips the disclosure for sending audio to a cloud transcription provider |
 | `meetings_audio_provider` | `same` | `same` follows the dictation provider; otherwise `orukeet`, `openai`, `mistral`, `google` or `custom` |
 | `meetings_audio_api_key`, `meetings_audio_endpoint`, `meetings_audio_model` | empty | the meeting provider's own settings when it is not `same` |
 | `meetings_auto_summary` | `false` | run a summary right after transcription (only when no disclosure is pending) |
-| `meetings_auto_speakers` | `false` | label speakers right after transcription (only when the upload is allowed) |
+| `meetings_auto_speakers` | `false` | label speakers right after transcription (needs the speaker model; skipped when live labels ran) |
 | `meetings_retention` | `days7` | default retention for new meetings |
-| `pyannote_api_key` | empty | pyannoteAI key for speaker labels (Settings › Meetings) |
+
+Loading an older config drops `pyannote_api_key`, `meetings_upload_policy` and
+`meetings_live_speakers_policy`; the next save removes them from disk.
 
 ## Verified on this machine
 
@@ -141,12 +145,17 @@ usable slice, not the whole spec.
   a real summary, two questions (one answerable, one refused as not in the
   record), a draft, Markdown and JSON export.
 - Orukeet timing: a 40 s clip decodes in about 3 s with per-token timestamps.
-- Speaker labels end to end against the real pyannoteAI API: a call track
-  built from two synthetic voices (English and Dutch, taking turns) came back
-  as two speakers; passages were split and labelled Speaker 1 and Speaker 2
-  with the microphone track untouched. The disclosure returned 409 first and
-  the remembered policy skipped it afterwards. The key came from Bitwarden
-  (`openclaw/PYANNOTEAI_API_KEY`) and answered `/v1/test` with 200.
+- Speaker labels end to end with the real model, the staged runtime and
+  Orukeet, through `MeetingService`: the AMI fixture from NeMo-Speech.cpp
+  (60 s of meeting EN2002d, CC BY 4.0, with a reference RTTM) played in real
+  time as call audio. After Stop, labels took 2.0 s and 98% of transcript
+  time went to the right speaker, with three speakers found; the fourth
+  says a few words. Diarization error rate on the clip was 23.4% after Stop
+  and 24.0% live, without a collar and with overlap included. Speaker
+  confusion was 2.3%; the rest is segment timing against a word-aligned
+  reference.
+- The model download ran through `LocalModelManager` from Hugging Face and
+  passed the pinned size and SHA-256 check.
 
 ## Not verified here
 
@@ -163,9 +172,20 @@ usable slice, not the whole spec.
 - Cloud transcription of meetings was exercised with a fake provider in the
   tests only; the real request goes through the same `transcribe_audio`
   adapter dictation uses every day, one call per window.
-- Speaker labels were exercised on a 29 s synthetic track only. Long
-  uploads (a one-hour track is about 115 MB of WAV) and real overlapping
-  speech have not been tried; pyannoteAI documents no size limit.
+- Speaker labels were measured on one 60-second English meeting excerpt.
+  Long meetings, Dutch speech, more than four speakers, echo between the
+  microphone and call audio, and slower laptops have not been measured. The
+  runtime keeps frame probabilities for about 20 minutes and folds older
+  ones into segments. A 25-minute track, the fixture repeated, went past
+  that point in 51 s and kept the same three speakers across all 25
+  repeats; a real one-hour meeting has not been tried.
+- Labels after Stop for one meeting while another records with live
+  speakers share the runtime's compute lock with the live stream. On a slow
+  PC that can delay live labels or stop them with the "could not keep up"
+  error; recording and transcription continue.
+- Linux builds do not include the runtime yet, so speaker labels report it
+  as missing there. `OWNKEY_NEMO_SPEECH_DIR` can point at a NeMo-Speech.cpp
+  build from commit 97a15af or later.
 - The meeting window was exercised with a test copy of the overlay on its
   own UDP port next to the development harness: open, focus, navigate, close
   and reopen, a refused non-local URL, and a Markdown export that landed in
@@ -181,7 +201,12 @@ usable slice, not the whole spec.
 - Packaging: `Ownkey.spec` bundles `meetings/ui` and the `soundcard` data
   files. An unsigned development installer (0.6.0) was built and its frozen
   `Ownkey.exe --local-smoke-test` passed, but the installer itself was not
-  run on a clean machine.
+  run on a clean machine. The spec also bundles the NeMo-Speech.cpp runtime
+  as `nemo_speech/` with its licenses. From the frozen backend,
+  `Ownkey.exe --diarization-smoke-test --model-dir … --wav … --output …`
+  labelled the AMI fixture with three speakers in 1.9 s. The runtime has not
+  been loaded on a CPU without AVX2 or on a PC without the Visual C++
+  runtime installed.
 
 ## Screenshots
 

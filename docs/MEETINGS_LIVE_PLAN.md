@@ -6,13 +6,13 @@ Implementation and validation status, 17 September 2026. The first working imple
 
 New meetings default to **Transcribe while recording**. Text arrives after pauses and, when live labels are enabled, suitable speaker changes. Stop processes the remaining audio and keeps completed passages and corrections. Disabling the option retains transcription after Stop.
 
-**Show live speaker changes with pyannoteAI** is a separate, optional setting on the New meeting screen. It shows anonymous active speakers, including simultaneous speakers, and supplies turn boundaries to transcription. Users can name speakers. Call audio and shared microphones use separate connections; identities are never merged across sources or reconnects automatically.
+**Show live speaker changes** is a separate, optional setting on the New meeting screen. It runs NVIDIA Nemotron 3 Diarization on this PC, shows anonymous active speakers, including simultaneous speakers, and supplies turn boundaries to transcription. Users can name speakers. Call audio and shared microphones use separate speaker streams; identities are never merged across sources.
 
-Orukeet stays local. Cloud transcription uses the selected provider and asks for permission to upload during recording. Live speaker detection requires a separate permission to stream selected tracks to pyannoteAI. These choices are resolved before recording starts. Changing Settings does not change an active session's provider or key.
+Orukeet stays local, and so does speaker detection: it needs the downloaded speaker model and no permission. Cloud transcription uses the selected provider and asks for permission to upload during recording. These choices are resolved before recording starts. Changing Settings does not change an active session's provider or key.
 
 ## Why transcription previously waited for Stop
 
-Capture already wrote durable five-second audio files, but those files were a storage mechanism. `MeetingService.stop()` started the transcription job, which calculated windows over the complete saved track. There was no recording-time recognition coordinator or live diarization transport. The former pyannote integration uploaded complete tracks to the batch endpoint.
+Capture already wrote durable five-second audio files, but those files were a storage mechanism. `MeetingService.stop()` started the transcription job, which calculated windows over the complete saved track. There was no recording-time recognition coordinator or live diarization stream. Speaker labels ran over complete saved tracks after Stop.
 
 ## Implemented architecture
 
@@ -20,7 +20,7 @@ Capture already wrote durable five-second audio files, but those files were a st
 flowchart LR
     A[Microphone and call audio] --> B[Aligned audio blocks]
     B --> C[Durable local chunks]
-    B --> D[Optional paced speaker stream]
+    B --> D[Optional local speaker stream]
     C --> E[Bounded audio reader]
     B --> E
     E --> F[Pause and speaker boundary controller]
@@ -39,10 +39,10 @@ flowchart LR
 | Durability | Capture flushes pending audio under its writer lock before a selected range is decoded. Model and network calls run outside that lock. Older ranges are read from intersecting WAV files. |
 | Persistence | Schema version 3 adds session options, committed window ranges and speaker turns. One transaction saves passages and advances the contiguous retry cursor. Silence also advances progress. |
 | Stable text | Passage IDs include source and owned start sample. Stop and retry do not renumber completed passages. Later batch labels preserve live passage IDs, words and corrections, filling only unambiguous source-labelled passages. |
-| Streaming | `streaming.py` owns paced WebSocket transport, event reception, clock mapping and bounded reconnect attempts. `websockets==15.0.1` is included in runtime requirements and the Windows build. |
+| Speakers | `streaming.py` runs one worker per source. It pushes saved-time audio into a NeMo-Speech.cpp diarization stream, turns committed frames into speaker starts and ends, and maps them back to saved audio time. |
 | Interface | The authenticated `/live` endpoint returns lightweight activity and progress approximately every 300 ms while visible and active. Ordinary detail refreshes remain once per second. Activity updates do not replace the editor. |
 
-Recognition holds one short range at a time; accumulated work is represented by offsets into saved audio. Existing capture queues hold at most about 60 seconds per source, the durable writer tail normally holds less than five seconds, and each speaker queue holds at most four seconds. Meetings do not introduce a second full-recording memory buffer.
+Recognition holds one short range at a time; accumulated work is represented by offsets into saved audio. Existing capture queues hold at most about 60 seconds per source, the durable writer tail normally holds less than five seconds, and each speaker queue holds at most 30 seconds. Meetings do not introduce a second full-recording memory buffer.
 
 ## Boundary policy
 
@@ -63,15 +63,17 @@ Timed subword tokens are grouped into words before assigning ownership or speake
 
 Cloud adapters currently return text without word times. They receive disjoint audio ranges without recognition overlap. Passages show approximate timing; mixed or overlapping speakers retain the source label. Continuous speech can still require a forced cut. No word-level timing precision is implied.
 
-## Speaker transport and Pause
+## Speaker stream and Pause
 
-The client requests `/v1/live` and streams mono 16 kHz float32 PCM in paced 100 ms frames. Events update an active set and persist meeting-time turns. Labels are namespaced by source and connection epoch, so reconnecting never silently assigns an old name to a new label. See the [streaming guide](https://docs.pyannote.ai/tutorials/streaming-real-time) and [event schema](https://docs.pyannote.ai/api-reference/streaming).
+Each source pushes mono 16 kHz audio in 100 ms blocks into a NeMo-Speech.cpp diarization stream with 3.04-second chunks and 80 ms of look-ahead. On the 60-second AMI fixture, that geometry ran 8.2 times faster than real time on four threads of a Core i5-13600KF, with the same error rate as labels after Stop. The runtime's 1.04-second default ran only 3.3 times faster, too slow for two tracks next to Orukeet on a laptop. Events update an active set and persist meeting-time turns. Labels are namespaced by source and stream, so a new stream never reuses an old name.
 
-Pause discards captured microphone and call audio. Open speaker sockets receive generated silence to preserve identities; paused time still counts as streaming usage. The start disclosure explains this. A piecewise clock maps stream time to saved audio time across multiple pauses. Activity is hidden while paused.
+Nemotron 3 Diarization does not revise a frame once the runtime commits it. A causal copy of the runtime's segment postprocessing (onset and offset hysteresis, edge padding, gap filling, minimum duration) turns new frames into starts and ends that are final when reported. The tests compare it with a port of the batch postprocessing on random input.
 
-A stalled or overflowing stream closes and may reconnect at the current position with fresh labels, with at most three connection attempts per source. Disconnection clears activity and shows an error while pause-based transcription continues. Displayed errors exclude credential-bearing socket URLs. The provider documents eight speakers, a five-second idle limit and a five-hour connection limit. Reconnection creates new identities; it does not guarantee identity continuity across that limit. See [billing](https://docs.pyannote.ai/administration/billing).
+Each stream also reports a settled position: every start and end before it has been reported. While recording, live transcription cuts a window only before that position, so a passage is attributed after its speaker turns are known. On the AMI fixture, passages arrived a median 4.7 seconds after their speech ended with live speakers on, and 1.7 seconds without. Pause flushes the pending window without waiting. After Stop, transcription waits at most 15 seconds for the speaker stream to drain.
 
-Events available when a window finishes determine attribution. Late events do not rewrite committed words or labels automatically. After Stop, optional batch labels can fill an unambiguous source label; they do not reconcile anonymous identities or split existing live passages.
+Pause discards captured microphone and call audio, and the speaker stream receives nothing. The model hears the meeting without the paused time, and a piecewise clock maps stream time back to saved audio. Activity is hidden while paused. Dictation comes first here too: while dictation records or decodes, audio waits in a 30-second queue. A stream that falls further behind stops with an error. Recording and pause-based transcription continue, and labels after Stop still work.
+
+Late events do not rewrite committed words or labels. After Stop, optional batch labels fill a live passage only when one speaker covers its time; they do not reconcile anonymous identities or split existing live passages. On the AMI fixture that filled 43% of transcript time after a meeting transcribed live without live speakers, because the other passages contain a speaker change.
 
 ## Recovery, editing and retention
 
@@ -96,7 +98,7 @@ Repository tests use generated PCM, invented text and fake events. They cover pa
 Private validation used the supplied recording without adding its name, audio, text, screenshots or provider logs to the repository:
 
 - The actual coordinator processed the complete decoded recording in about 3 minutes 32 seconds, using 402 speech windows. The speech source and an equally long synthetic silent second source had exact contiguous sample coverage. No forced cut was required; the longest owned window was 21.8 seconds. This was accelerated saved-audio processing, not a one-hour real-time hardware soak.
-- A real-time two-minute replay through capture, Orukeet and pyannoteAI produced text before Stop, observed two active labels, retained unique IDs and reached the exact final offset on both tracks. It included an eight-second Pause/Resume interval and finalized the speaker socket successfully.
+- A real-time replay of the AMI fixture as call audio through capture, Orukeet and live speaker labels on this PC produced text before Stop and found three speakers. It attributed 92% of transcript time to the right speaker and left 8% on the Call audio label, mostly short fragments at turn changes. The process used 129% of one CPU core on average with live speakers and 74% without.
 - Browser checks with synthetic sources exercised consent and cancellation, text arrival, speaker activity, note focus and persistence while text arrived, live corrections, Pause/Resume, Stop and playback. Expected consent responses were distinguished from unexpected server errors.
 - A Windows PyInstaller build succeeded. Its offline smoke test transcribed a private 60-second clip through the new dictation path, unloaded the idle model and reloaded it successfully. Network requests were disabled for that smoke test.
 
@@ -106,4 +108,4 @@ These checks establish pipeline behavior, bounded recognition input and recovera
 
 Before claiming an accuracy improvement or a latency service level, create a private human-checked reference covering soft speech, noise, music, overlap, proper nouns, negation and sentence continuations. The energy detector can mistake noise for speech or soft speech for silence. Check forced seams against that reference and consider a speech model or richer hypothesis alignment if the results justify it.
 
-An hour-long real-time replay with two speaking hardware sources, deliberate network faults, native window interaction and resource monitoring remains a release-hardening check. Existing gap placement still uses the original capture queue/padding behavior; this change does not establish hardware clock synchronization. Multi-hour speaker rotation, cross-connection identity reconciliation, passage-delta polling and automatic late-event relabelling remain follow-up work.
+An hour-long real-time replay with two speaking hardware sources, deliberate network faults, native window interaction and resource monitoring remains a release-hardening check. Existing gap placement still uses the original capture queue/padding behavior; this change does not establish hardware clock synchronization. Multi-hour speaker streams, reconciling live and batch speaker identities, passage-delta polling and automatic late-event relabelling remain follow-up work.

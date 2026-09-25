@@ -215,7 +215,7 @@ class _Handler(BaseHTTPRequestHandler):
             mic_device=body.get("mic_device"), system_device=body.get("system_device"),
             retention=body.get("retention"), mic_shared=bool(body.get("mic_shared")),
             live_transcription=bool(body.get('live_transcription')), live_speakers=bool(body.get('live_speakers')),
-            live_transcription_ok=bool(body.get('live_transcription_ok')), live_speakers_ok=bool(body.get('live_speakers_ok')))
+            live_transcription_ok=bool(body.get('live_transcription_ok')))
         self._json(HTTPStatus.CREATED, {"meeting": meeting})
 
     def h_meeting(self, query, mid):
@@ -250,7 +250,7 @@ class _Handler(BaseHTTPRequestHandler):
         if action == "speakers":
             tracks = body.get("tracks")
             tracks = [str(t) for t in tracks] if isinstance(tracks, list) else None
-            return self._json(HTTPStatus.ACCEPTED, {"job": service.label_speakers(mid, remote_ok=remote_ok, tracks=tracks)})
+            return self._json(HTTPStatus.ACCEPTED, {"job": service.label_speakers(mid, tracks=tracks)})
         if action == "pause":
             return self._json(HTTPStatus.OK, {"capture": service.pause()})
         if action == "resume":
@@ -340,10 +340,10 @@ class _Handler(BaseHTTPRequestHandler):
     def h_policy(self, query):
         body = self._body()
         service = self.owner.service
-        for kind in ("remote", "upload", "transcription", "live_transcription", "live_speakers"):
+        for kind in ("remote", "transcription", "live_transcription"):
             if kind in body:
                 service.set_policy(kind, str(body.get(kind)))
-        self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(), "upload_policy": service.upload_policy(),
+        self._json(HTTPStatus.OK, {"remote_policy": service.remote_policy(),
                                    "transcription_policy": service.transcription_policy()})
 
     def h_open_settings(self, query):

@@ -25,23 +25,18 @@ from .transcription import merge_tracks, transcribe_track
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 DEFAULT_MEETING_CONFIG = {
     "meetings_remote_policy": "ask",         # ask | allow: text to the rewrite provider
-    "meetings_upload_policy": "ask",         # ask | allow: audio to pyannoteAI
     "meetings_transcription_policy": "ask",  # ask | allow: audio to a cloud transcription provider
     "meetings_auto_summary": False,
     "meetings_auto_speakers": False,
     "meetings_retention": "days7",
-    "pyannote_api_key": "",
     "meetings_audio_provider": "same",       # same | orukeet | openai | mistral | google | custom
     "meetings_audio_api_key": "",
     "meetings_audio_endpoint": "",
     "meetings_audio_model": "",
     "meetings_live_transcription_policy": "ask",
-    "meetings_live_speakers_policy": "ask",
 }
-POLICY_KEYS = {"remote": "meetings_remote_policy", "upload": "meetings_upload_policy",
-               "transcription": "meetings_transcription_policy",
-               "live_transcription": "meetings_live_transcription_policy",
-               "live_speakers": "meetings_live_speakers_policy"}
+POLICY_KEYS = {"remote": "meetings_remote_policy", "transcription": "meetings_transcription_policy",
+               "live_transcription": "meetings_live_transcription_policy"}
 CLOUD_WINDOW_NOTE = "windows of up to 28 seconds"
 RETENTION_SWEEP_SECONDS = 60
 
@@ -61,7 +56,7 @@ class ConsentRequired(MeetingError):
 class MeetingService:
     def __init__(self, store: MeetingStore, *, get_config, set_config=None, local_models=None,
                  local_transcriber=None, chat=None, get_rewrite_key=None, get_audio_key=None, notify=None,
-                 open_settings=None, source_factory=None, on_capture_change=None, diarizer_factory=None,
+                 open_settings=None, source_factory=None, on_capture_change=None, diarizer=None,
                  cloud_transcriber=None, dictation_busy=None, yield_to=None, clock=time.monotonic,
                  stream_factory=None, get_local_audio=None):
         self.store = store
@@ -70,7 +65,8 @@ class MeetingService:
         # background decoding pauses between windows while dictation is busy.
         self._dictation_busy = dictation_busy or (lambda: False)
         self._yield_to = yield_to or (lambda: False)
-        self._diarizer_factory = diarizer_factory or self._default_diarizer
+        # Nemotron 3 Diarization on this PC; without it passages keep source labels.
+        self.diarizer = diarizer
         self._cloud_transcriber = cloud_transcriber or self._default_cloud_transcriber
         self._get_audio_key = get_audio_key or (lambda cfg: str(cfg.get("audio_api_key", "") or ""))
         self._get_config = get_config
@@ -116,7 +112,6 @@ class MeetingService:
         snapshot = copy.deepcopy(cfg)
         snapshot['audio_api_key'] = self._get_audio_key(cfg)
         snapshot['rewrite_api_key'] = self._get_rewrite_key(cfg)
-        snapshot['pyannote_api_key'] = self.pyannote_key(cfg)
         return snapshot
 
     def _enqueue(self, job: dict, cfg: dict) -> None:
@@ -124,9 +119,6 @@ class MeetingService:
 
     def remote_policy(self) -> str:
         return "allow" if self.config().get("meetings_remote_policy") == "allow" else "ask"
-
-    def upload_policy(self) -> str:
-        return "allow" if self.config().get("meetings_upload_policy") == "allow" else "ask"
 
     def set_policy(self, kind: str, policy: str) -> None:
         if kind not in POLICY_KEYS:
@@ -138,16 +130,17 @@ class MeetingService:
     def set_remote_policy(self, policy: str) -> None:
         self.set_policy("remote", policy)
 
-    def pyannote_key(self, cfg: dict | None = None) -> str:
-        cfg = cfg or self.config()
-        return str(cfg.get("pyannote_api_key") or os.environ.get("PYANNOTEAI_API_KEY", "") or "").strip()
+    def speaker_labels_info(self) -> dict:
+        if self.diarizer is None:
+            return {"configured": False, "installed": False, "runtime": False, "provider": "Nemotron 3 Diarization",
+                    "model": "", "host": "", "remote": False, "error": "Speaker labels are not available here."}
+        return self.diarizer.info()
 
-    def speaker_labels_info(self, cfg: dict | None = None) -> dict:
-        return {"configured": bool(self.pyannote_key(cfg)), "provider": "pyannoteAI",
-                "model": diarization.DEFAULT_MODEL, "host": "api.pyannote.ai", "remote": True}
-
-    def _default_diarizer(self, cfg: dict):
-        return diarization.PyannoteClient(self.pyannote_key(cfg))
+    def _speaker_labels_ready(self) -> None:
+        info = self.speaker_labels_info()
+        if not info["configured"]:
+            raise MeetingError(info.get("error") if info.get("installed") else
+                               "Speaker labels need the Nemotron 3 Diarization model. Download it in Settings > Meetings.")
 
     def text_model_info(self, cfg: dict | None = None) -> dict:
         from providers import provider_label, provider_requires_key
@@ -274,12 +267,10 @@ class MeetingService:
             "local_model": self.local_model_info(),
             "transcriber": self.transcription_engine(cfg),
             "text_model": self.text_model_info(cfg),
-            "speaker_labels": self.speaker_labels_info(cfg),
+            "speaker_labels": self.speaker_labels_info(),
             "remote_policy": self.remote_policy(),
-            "upload_policy": self.upload_policy(),
             "transcription_policy": self.transcription_policy(),
             "live_transcription_policy": cfg['meetings_live_transcription_policy'],
-            "live_speakers_policy": cfg['meetings_live_speakers_policy'],
             "auto_summary": bool(cfg.get("meetings_auto_summary")),
             "auto_speakers": bool(cfg.get("meetings_auto_speakers")),
             "default_retention": cfg.get("meetings_retention") if cfg.get("meetings_retention") in RETENTION_CHOICES else "days7",
@@ -335,7 +326,7 @@ class MeetingService:
     def start_meeting(self, title: str = "", *, mic: bool = True, system: bool = True, mic_device=None,
                       system_device=None, retention: str | None = None, mic_shared: bool = False,
                       live_transcription: bool = False, live_speakers: bool = False,
-                      live_transcription_ok: bool = False, live_speakers_ok: bool = False) -> dict:
+                      live_transcription_ok: bool = False) -> dict:
         if not mic and not system:
             raise MeetingError("Choose at least one source.")
         cfg = self.config()
@@ -352,22 +343,9 @@ class MeetingService:
                           'Pause stops sending new audio. Choose Orukeet to transcribe on this PC.')
                 raise ConsentRequired(disclosure)
         if live_speakers:
-            if not self.pyannote_key(cfg):
-                raise MeetingError('Add a pyannoteAI key in Settings > Meetings first.')
+            self._speaker_labels_ready()
             if not system and not (mic and mic_shared):
                 raise MeetingError('Live speaker labels need call audio or a shared microphone.')
-            if not live_speakers_ok and cfg['meetings_live_speakers_policy'] != 'allow':
-                raise ConsentRequired({
-                    'kind': 'upload', 'policy_key': 'live_speakers', 'provider': 'pyannoteAI',
-                    'model': 'Live-1', 'host': 'api.pyannote.ai',
-                    'title': 'Show speaker changes while recording',
-                    'intro': 'Selected audio streams to pyannoteAI during the meeting. During Pause, only '
-                             'generated silence is sent to preserve speaker labels; paused time still counts as usage.',
-                    'sent': ([SOURCE_LABELS[SYSTEM]] if system else []) +
-                            ([SOURCE_LABELS[MIC]] if mic and mic_shared else []),
-                    'not_sent': ['My thoughts', 'Transcript text', 'Audio heard during Pause'],
-                    'retention': 'pyannoteAI processes live audio without storing the audio or stream outputs.',
-                })
         self._mic_preview.stop()  # hand the microphone over to the recording
         with self._lock:
             if self.is_capturing():
@@ -651,7 +629,7 @@ class MeetingService:
 
         live = LiveTranscription(self.store, job, sources=self.store.get_meeting(meeting_id)['sources'],
             decoder_factory=decoder_factory, capture=session, on_complete=complete,
-            speaker_key=self.pyannote_key(cfg), speaker_sources=speaker_sources,
+            diarizer=self.diarizer if speaker_sources else None, speaker_sources=speaker_sources,
             stream_factory=self._stream_factory or LiveSpeakerStream, timed=engine['kind'] == 'local',
             yield_to=lambda: self._yield_to() or self._closed)
         self._live[meeting_id] = live
@@ -730,23 +708,6 @@ class MeetingService:
             "policy": self.remote_policy(),
         }
 
-    def upload_disclosure(self, sources: list[str] | None = None) -> dict:
-        sources = sources or [SYSTEM]
-        tracks = " and ".join(SOURCE_LABELS.get(s, s) for s in sources)
-        others = [SOURCE_LABELS[s] + " track" for s in (MIC, SYSTEM) if s not in sources]
-        return {
-            "kind": "upload", "policy_key": "upload",
-            "title": "Ownkey will upload audio to pyannoteAI",
-            "intro": f"Speaker labels come from pyannoteAI's hosted diarization. The {tracks} track is uploaded "
-                     "for this step only; nothing else leaves this PC.",
-            "provider": "pyannoteAI", "model": diarization.DEFAULT_MODEL, "host": "api.pyannote.ai",
-            "sent": [f"{tracks} track (WAV, mono 16 kHz)"],
-            "not_sent": others + ["Transcript", "My thoughts"],
-            "retention": "pyannoteAI deletes uploads within 48 hours and results within 24 hours, "
-                         "and does not train on them.",
-            "policy": self.upload_policy(),
-        }
-
     def speaker_tracks_available(self, meeting_id: str) -> list[str]:
         sources = {chunk["source"] for chunk in self.store.list_chunks(meeting_id)}
         return [source for source in (MIC, SYSTEM) if source in sources]
@@ -761,7 +722,7 @@ class MeetingService:
             return [MIC, SYSTEM] if shared else [SYSTEM]
         return available
 
-    def label_speakers(self, meeting_id: str, *, remote_ok: bool = False, tracks: list[str] | None = None) -> dict:
+    def label_speakers(self, meeting_id: str, *, tracks: list[str] | None = None) -> dict:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             raise MeetingError("This meeting no longer exists.")
@@ -772,15 +733,12 @@ class MeetingService:
         if not self.store.list_passages(meeting_id):
             raise MeetingError("Transcribe the meeting first.")
         cfg = self._job_config(self.config())
-        if not self.speaker_labels_info(cfg)["configured"]:
-            raise MeetingError("Speaker labels need a pyannoteAI key. Add one in Settings > Meetings.")
+        self._speaker_labels_ready()
         available = self.speaker_tracks_available(meeting_id)
         wanted = [str(t) for t in (tracks or [])] or self._speaker_targets(meeting_id, meeting)
         targets = [source for source in (MIC, SYSTEM) if source in wanted and source in available]
         if not targets:
             raise MeetingError("No audio track to label." if not available else "Choose at least one recorded track.")
-        if not remote_ok and cfg.get("meetings_upload_policy") != "allow":
-            raise ConsentRequired(self.upload_disclosure(targets))
         for job in self.store.list_jobs(meeting_id, ("queued", "running")):
             if job["kind"] in ("speakers", "transcribe"):
                 return job
@@ -797,8 +755,8 @@ class MeetingService:
         meeting = self.store.get_meeting(meeting_id)
         if meeting is None:
             return
-        cfg = job['_config']
-        client = self._diarizer_factory(cfg)
+        if self.diarizer is None:
+            raise MeetingError("Speaker labels are not available here.")
         targets = []
         try:
             targets = [t for t in json.loads(job.get("detail") or "{}").get("tracks", []) if t in (MIC, SYSTEM)]
@@ -814,11 +772,19 @@ class MeetingService:
             if should_stop():
                 return
             label = SOURCE_LABELS.get(source, source)
-            self.store.update_job(job["id"], detail=f"Uploading {label}", progress=0.1)
-            segments = client.diarize_wav(
-                self.audio_wav(meeting_id, source), f"{meeting_id}-{source}.wav", should_stop=should_stop,
-                on_status=lambda status, label=label: self.store.update_job(
-                    job["id"], detail=f"{label} · pyannoteAI {status}", progress=0.5))
+            done_before = targets.index(source)
+            self.store.update_job(job["id"], detail=f"{label} · loading the speaker model",
+                                  progress=done_before / len(targets))
+
+            def progress(done, total, label=label, done_before=done_before):
+                if not should_stop():
+                    fraction = (done_before + done / max(total, 1e-6)) / len(targets)
+                    self.store.update_job(job["id"], progress=min(0.99, fraction),
+                                          detail=f"{label} · {int(done // 60)}:{int(done % 60):02d} of "
+                                                 f"{int(total // 60)}:{int(total % 60):02d}")
+
+            segments = self.diarizer.diarize(audio.concat_chunks(self.store.list_chunks(meeting_id, source)),
+                                             should_stop=should_stop, on_progress=progress)
             if should_stop():
                 return
             mine = [p for p in passages if p["source"] == source]
@@ -844,7 +810,7 @@ class MeetingService:
             merged = sorted(passages, key=lambda p: p['start']) if incremental else merge_tracks({"all": passages})
             self.store.replace_passages(meeting_id, merged)
             self.store.add_event(meeting_id, meeting.get("elapsed", 0.0), "speakers",
-                                 f"{len(found)} speaker{'s' if len(found) != 1 else ''} · pyannoteAI {diarization.DEFAULT_MODEL}")
+                                 f"{len(found)} speaker{'s' if len(found) != 1 else ''} · Nemotron 3 Diarization on this PC")
         if meeting['retention'] == 'after_transcription':
             self.sweep_retention()
         return True
@@ -992,8 +958,8 @@ class MeetingService:
             if not latest or meeting_id in self._cancelled or self._closed:
                 return
             cfg = self._job_config(self.config())
-            auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info(cfg)["configured"]
-                    and cfg.get("meetings_upload_policy") == "allow" and latest and latest["audio_state"] == "kept"
+            auto_speakers = (cfg.get("meetings_auto_speakers") and self.speaker_labels_info()["configured"]
+                    and latest and latest["audio_state"] == "kept"
                     and self._speaker_targets(meeting_id, latest)
                     and not (self.store.live_options(meeting_id) or {}).get('speakers'))
             if auto_speakers:

@@ -8,6 +8,11 @@ py -m pip install --disable-pip-version-check -q pyinstaller
 if errorlevel 1 goto :fail
 
 echo.
+echo Preparing the speaker label runtime...
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Build-NemoSpeechRuntime.ps1
+if errorlevel 1 goto :fail
+
+echo.
 echo Building Ownkey...
 py -m PyInstaller --noconfirm --clean Ownkey.spec
 if errorlevel 1 goto :fail

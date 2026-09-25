@@ -9,6 +9,9 @@ build_*/
 **/dist/
 **/build/
 
+# Native runtimes built by scripts/ (see Build-NemoSpeechRuntime.ps1)
+vendor/
+
 # Local config (contains your API key — never commit this)
 config.json
 

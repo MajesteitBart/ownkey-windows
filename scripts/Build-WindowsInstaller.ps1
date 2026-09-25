@@ -137,6 +137,9 @@ function Invoke-BackendBuild {
         ) -Description 'PyInstaller dependency installation'
     }
 
+    Write-Host '[backend] Preparing the speaker label runtime...'
+    & (Join-Path $PSScriptRoot 'Build-NemoSpeechRuntime.ps1')
+
     Write-Host '[backend] Building the PyInstaller directory bundle...'
     Invoke-CheckedCommand -FilePath $python.Source -ArgumentList @(
         '-m', 'PyInstaller',

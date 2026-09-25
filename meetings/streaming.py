@@ -1,17 +1,16 @@
-"""Paced pyannoteAI streaming, isolated from capture and transcription."""
+"""Live speaker activity on this PC, isolated from capture and transcription."""
 
 from bisect import bisect_right
-import json
 import math
 import queue
 import secrets
 import threading
-import time
 
 import numpy as np
 
 RATE = 16000
 BLOCK = 1600
+QUEUE_BLOCKS = 300  # 30 seconds: covers dictation holds and slow model steps
 
 
 class StreamClock:
@@ -49,18 +48,26 @@ class StreamClock:
 
 
 class LiveSpeakerStream:
-    def __init__(self, key, source, *, paused, on_event, on_status, connect=None, session=None):
-        self.key, self.source = key, source
-        self.paused, self.on_event, self.on_status = paused, on_event, on_status
-        self._connect, self._http = connect, session
-        self._queue = queue.Queue(maxsize=40)
+    """Feed one source's saved-time audio to a local diarizer stream and report
+    speaker starts and ends in saved-audio seconds. Paused audio is never fed,
+    so the model sees the meeting without the gaps; the clock maps back.
+
+    ``settled_sample()`` tells transcription how far speaker turns are final,
+    so a window is only attributed once its turns are known."""
+
+    def __init__(self, source, *, diarizer, on_event, on_status, yield_to=lambda: False):
+        from local_diarization import LIVE_PRESET
+
+        self.source, self.diarizer, self.preset = source, diarizer, LIVE_PRESET
+        self.on_event, self.on_status, self.yield_to = on_event, on_status, yield_to
+        self._queue = queue.Queue(maxsize=QUEUE_BLOCKS)
         self._lock = threading.Lock()
         self._tail = np.zeros(0, dtype=np.int16)
         self._tail_start = 0
         self._stop = threading.Event()
         self._finish = threading.Event()
         self._overflow = threading.Event()
-        self._socket = None
+        self._settled = 0
         self.thread = threading.Thread(target=self._run, name=f'meeting-speakers-{source}', daemon=True)
 
     def start(self):
@@ -95,117 +102,70 @@ class LiveSpeakerStream:
 
     def cancel(self):
         self._stop.set()
-        sock = self._socket
-        if sock:
-            try:
-                sock.close()
-            except Exception:
-                pass
+
+    def settled_sample(self):
+        """Saved-audio sample before which every speaker event is reported, or
+        None once this stream no longer produces events."""
+        with self._lock:
+            return None if self._stop.is_set() else self._settled
+
+    def _settle(self, clock, binarizer):
+        until = clock.at(binarizer.settled_seconds())
+        if until is not None:
+            with self._lock:
+                if self._settled is not None:
+                    self._settled = max(self._settled, round(until * RATE))
+
+    def _emit(self, epoch, clock, events):
+        for speaker, seconds, starting in events:
+            mapped = clock.at(seconds, ending=not starting)
+            if mapped is None and not starting:
+                mapped = clock.at(min(seconds, clock.sent / RATE), ending=True)
+            if mapped is not None:
+                self.on_event(self.source, epoch, str(speaker + 1), mapped, starting)
 
     def _run(self):
-        import requests
-        from websockets.sync.client import connect
+        from local_diarization import LiveBinarizer
 
-        http = self._http or requests.Session()
-        connector = self._connect or connect
-        for attempt in range(3):
-            if self._stop.is_set():
-                break
-            epoch = secrets.token_hex(4)
-            self.on_status(self.source, 'connecting', '', epoch)
-            try:
-                response = http.post('https://api.pyannote.ai/v1/live',
-                    headers={'Authorization': f'Bearer {self.key}'}, json={}, timeout=20)
-                if response.status_code != 200:
-                    message = ('pyannoteAI rejected the key.' if response.status_code == 401 else
-                               'pyannoteAI could not open live speaker labels. Recording continues.')
-                    self.on_status(self.source, 'error', message, epoch)
-                    break
-                if self._stop.is_set():
-                    break
-                with connector(response.json()['url'], open_timeout=25, close_timeout=2) as sock:
-                    self._socket = sock
+        epoch = secrets.token_hex(4)
+        self.on_status(self.source, 'connecting', '', epoch)
+        try:
+            with self.diarizer.lease(self.preset) as model:
+                stream = model.open_stream()
+                try:
+                    binarizer = LiveBinarizer(model.num_speakers, model.seconds_per_frame)
                     clock = StreamClock()
-                    receiver_done = threading.Event()
-                    remote_error = threading.Event()
-
-                    def receive(sock=sock, clock=clock, epoch=epoch,
-                                remote_error=remote_error, receiver_done=receiver_done):
-                        try:
-                            while not self._stop.is_set():
-                                try:
-                                    raw = sock.recv(timeout=.5)
-                                except TimeoutError:
-                                    continue
-                                item = json.loads(raw)
-                                kind = item.get('type')
-                                if kind == 'error':
-                                    remote_error.set()
-                                    return
-                                if kind not in ('diarization_speaker_start', 'diarization_speaker_end'):
-                                    continue
-                                data = item.get('data') or {}
-                                timestamp = float(data.get('timestamp', -1))
-                                if not math.isfinite(timestamp):
-                                    continue
-                                ending = kind == 'diarization_speaker_end'
-                                mapped = clock.at(timestamp, ending=ending)
-                                label = str(data.get('speaker', ''))
-                                if mapped is not None and label and len(label) <= 80:
-                                    self.on_event(self.source, epoch, label, mapped, not ending)
-                        except Exception:
-                            pass  # errors can contain the credential-bearing socket URL
-                        finally:
-                            receiver_done.set()
-
-                    receiver = threading.Thread(target=receive, name=f'speaker-events-{self.source}', daemon=True)
-                    receiver.start()
                     self.on_status(self.source, 'listening', '', epoch)
-                    due = time.monotonic()
-                    finalized = False
                     while not self._stop.is_set():
-                        if self._overflow.is_set() or time.monotonic() - due > 3:
-                            raise RuntimeError('stream behind')
-                        if receiver_done.is_set() or remote_error.is_set():
-                            raise RuntimeError('stream closed')
+                        if self._overflow.is_set():
+                            raise OverflowError
+                        # Dictation comes first; the queue holds audio meanwhile.
+                        if self.yield_to():
+                            self._stop.wait(.05)
+                            continue
                         try:
                             position, pcm = self._queue.get(timeout=.1)
                         except queue.Empty:
-                            if self._finish.is_set():
-                                sock.send(json.dumps({'type': 'end_of_stream'}))
-                                receiver_done.wait(5)
-                                if remote_error.is_set() or not receiver_done.is_set():
-                                    raise RuntimeError('stream did not finalize')
-                                finalized = True
+                            # finish() queues the padded tail before setting the flag.
+                            if self._finish.is_set() and self._queue.empty():
                                 break
-                            if self.paused():
-                                position, pcm = None, np.zeros(BLOCK, dtype=np.int16)
-                            else:
-                                due = max(due, time.monotonic())
-                                continue
-                        if self._stop.wait(max(0., due - time.monotonic())):
-                            break
+                            continue
                         clock.append(position)
-                        sock.send((pcm.astype('<f4') / 32768.).tobytes())
-                        due = max(due + .1, time.monotonic())
-                    sock.close()
-                    receiver.join(timeout=2)
-                    if finalized or self._stop.is_set():
-                        self.on_status(self.source, 'stopped', '', epoch)
-                        break
-            except Exception:
-                self.on_status(self.source, 'error',
-                    'Live speaker labels disconnected. Pause-based transcription continues.', epoch)
-                # A fresh stream starts at current audio. Its labels have a new namespace.
-                while True:
-                    try:
-                        self._queue.get_nowait()
-                    except queue.Empty:
-                        break
-                self._overflow.clear()
-                if self._finish.is_set() or self._stop.wait(2):
-                    break
-            finally:
-                self._socket = None
-        if self._http is None:
-            http.close()
+                        stream.push(pcm.astype(np.float32) / 32768.)
+                        self._emit(epoch, clock, binarizer.feed(stream.new_probs()))
+                        self._settle(clock, binarizer)
+                    if self._stop.is_set():
+                        return
+                    stream.finish()
+                    self._emit(epoch, clock, binarizer.feed(stream.new_probs()) + binarizer.close())
+                    self.on_status(self.source, 'stopped', '', epoch)
+                finally:
+                    stream.close()
+        except OverflowError:
+            self.on_status(self.source, 'error', 'Live speaker labels could not keep up on this PC. '
+                           'Recording continues; add speaker labels after Stop.', epoch)
+        except Exception as exc:
+            self.on_status(self.source, 'error', f'Live speaker labels stopped: {exc}'.strip(), epoch)
+        finally:
+            with self._lock:
+                self._settled = None

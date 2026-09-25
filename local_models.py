@@ -38,6 +38,7 @@ class Model:
     files: tuple[ModelFile, ...]
     file_urls: tuple[str, ...] = ()
     label: str = ""
+    settings_tab: str = ""
 
     @property
     def extracted_size(self):
@@ -171,7 +172,7 @@ class LocalModelManager:
 
     def validate(self, path=None, *, cancellable=False):
         directory = Path(path) if path is not None else self.path
-        settings_tab = "Rewriting" if self.model.file_urls else "Audio"
+        settings_tab = self.model.settings_tab or ("Rewriting" if self.model.file_urls else "Audio")
         for file in self.model.files:
             target = directory / file.name
             if directory.is_symlink() or target.is_symlink() or not target.is_file():
@@ -222,6 +223,8 @@ class LocalModelManager:
     def remove(self):
         with self._lock:
             if self._active or self._users or self._state.stage in BUSY_STAGES:
+                if self.model.settings_tab == "Meetings":
+                    raise ModelError("Speaker labels are using this model. Wait for them to finish before removing it.")
                 raise ModelError("Switch to another audio provider and save before removing this model. Wait for pending transcription to finish.")
             # A chosen folder can also contain the user's own files.
             if self.path.is_symlink() or getattr(self.path, "is_junction", lambda: False)():
