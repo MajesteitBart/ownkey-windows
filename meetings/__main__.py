@@ -64,6 +64,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     import ownkey
+    from local_diarization import NEMOTRON_DIARIZATION, LocalDiarizer
     from local_models import LocalModelManager
     from local_transcription import LocalTranscriber
     from .server import MeetingServer
@@ -89,6 +90,7 @@ def main(argv=None) -> int:
     store = MeetingStore(args.library)
     service = MeetingService(store, get_config=lambda: cfg, set_config=set_config, local_models=models,
                              local_transcriber=transcriber, get_rewrite_key=ownkey.get_rewrite_api_key,
+                             diarizer=LocalDiarizer(LocalModelManager(model=NEMOTRON_DIARIZATION)),
                              notify=lambda message: print("[notify]", message), source_factory=source_factory)
     server = MeetingServer(service, port=args.port)
     url = server.start()

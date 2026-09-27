@@ -150,6 +150,8 @@ Node.js with pnpm, Rust with the MSVC toolchain, Visual Studio Build Tools, and
 build-installer.bat
 ```
 
+The first build also compiles the speaker label runtime, NVIDIA NeMo-Speech.cpp at a pinned commit, with `scripts\Build-NemoSpeechRuntime.ps1`. It needs Git and the Visual Studio C++ workload, and installs CMake and Ninja into its own folder when they are missing. It took 8 minutes on the development PC with vcpkg's package cache already filled; a clean machine also compiles SentencePiece and Abseil once. Later builds reuse `vendor\nemo-speech`.
+
 This contributor path does not require a certificate. It writes `dist-installer-dev\Ownkey-Setup-0.6.0-UNSIGNED-DEV.exe` and a warning file. Do not publish that output. It packages the PyInstaller backend, Tauri overlay, shortcuts, uninstaller, and Ownkey branding for local testing.
 
 ### Build a signed public release
@@ -222,7 +224,7 @@ Right-click the tray icon → **Meetings** → **New meeting**. The Ownkey Meeti
 
 The three tabs are **My thoughts** (your notes), **Transcript** (editable passages, search and playback) and **Summary** (decisions, actions, questions and follow-up drafts with citations). Summary and question requests use the rewrite provider and ask before sending text remotely. Export Markdown or JSON at any time.
 
-Optional **live speaker changes** use a pyannoteAI key and separate upload permission. Call audio and shared microphones can show Speaker 1, Speaker 2, … while recording, and speaker changes help choose transcription boundaries. You can name speakers and correct completed text while recording continues. Pause sends only generated silence to open speaker connections to preserve their identities; that paused time still counts as streaming usage. Batch speaker labels remain available after Stop. See [the implementation and validation notes](docs/MEETINGS_LIVE_PLAN.md) for the behavior and its limits.
+Optional **live speaker changes** run NVIDIA Nemotron 3 Diarization on this PC after a one-time 107 MB model download in Settings › Meetings. There is no key and no upload. Call audio and shared microphones can show Speaker 1, Speaker 2, … while recording, and speaker changes help choose transcription boundaries. With live speakers on, a passage appears about three seconds later, once its speaker is settled. You can name speakers and correct completed text while recording continues. Speaker labels after Stop use the same model. See [the implementation and validation notes](docs/MEETINGS_LIVE_PLAN.md) for the behavior and its limits.
 
 <p align="center">
   <img src="assets/readme/meetings-transcript.png" alt="The Ownkey Meetings window: a transcript with timed passages, three speaker labels to confirm, search and playback" width="687">
@@ -305,6 +307,24 @@ or cloud fallback. To remove a model, switch audio providers, save, then use
 default, including during silent uninstall.
 Custom model locations are kept when uninstalling. **Remove download** removes
 only the model's known files and preserves unrelated files in the chosen folder.
+
+### Meeting speaker labels with Nemotron 3 Diarization
+
+Speaker labels use [NVIDIA Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization),
+a 100M-parameter model that separates up to eight speakers per track. Ownkey runs its
+pinned 8-bit GGUF on the CPU through [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp),
+which is part of the installer. Audio never leaves the PC.
+
+Download the 107 MB model in **Settings › Meetings › Speaker labels**. It is stored under
+`%LOCALAPPDATA%\Ownkey\models\nemotron-3-diarization\f667ed73aee57d40cc39428eb768b4fd87a0a29e`,
+and the uninstaller's model question covers it. Weights use the OpenMDW License 1.1.
+The runtime needs a processor with AVX2 (most PCs from 2013 onward) and uses four CPU
+threads while it works.
+
+On the 60-second AMI meeting excerpt that NeMo-Speech.cpp ships as a test fixture, labels
+after Stop took 2 seconds on a Core i5-13600KF and attributed 98% of transcript time to the
+right speaker. Live labels attributed 92% and ran about eight times faster than real time
+per track. See [the validation notes](docs/MEETINGS_LIVE_PLAN.md#speaker-stream-and-pause).
 
 ## Configuration
 

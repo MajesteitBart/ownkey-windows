@@ -8,10 +8,12 @@ from .segmentation import (CORE_LIMIT, LEFT_CONTEXT, RIGHT_CONTEXT, RATE,
                            next_boundary, turn_boundaries, window_passages)
 from .streaming import LiveSpeakerStream
 
+SPEAKER_DRAIN_SECONDS = 15  # after Stop, text waits at most this long for speaker turns
+
 
 class LiveTranscription:
     def __init__(self, store, job, *, sources, decoder_factory, on_complete, capture=None,
-                 speaker_key='', speaker_sources=(), stream_factory=LiveSpeakerStream,
+                 diarizer=None, speaker_sources=(), stream_factory=LiveSpeakerStream,
                  timed=True, yield_to=lambda: False):
         self.store, self.job = store, job
         self.meeting_id = job['meeting_id']
@@ -24,11 +26,10 @@ class LiveTranscription:
         self._active, self._stream_states, self._speaker_ids = {}, {}, {}
         self._positions = {s: store.processed_samples(self.meeting_id, s) for s in self.sources}
         self.streams = {}
-        if speaker_key and capture:
+        if diarizer is not None and capture:
             for source in speaker_sources:
-                self.streams[source] = stream_factory(speaker_key, source,
-                    paused=lambda: capture.state == 'paused', on_event=self._speaker_event,
-                    on_status=self._stream_status)
+                self.streams[source] = stream_factory(source, diarizer=diarizer, on_event=self._speaker_event,
+                                                      on_status=self._stream_status, yield_to=yield_to)
         self.thread = threading.Thread(target=self.run, name='meeting-live-transcription', daemon=True)
 
     def start(self):
@@ -102,6 +103,17 @@ class LiveTranscription:
             else:
                 self._active.pop(sid, None)
 
+    def _speaker_gate(self, source, paused, ended_at):
+        """While recording, cut windows only where speaker turns are final. Pause
+        flushes as before, and after Stop a stuck speaker model cannot hold text back."""
+        stream = self.streams.get(source)
+        if stream is None or paused:
+            return None
+        if ended_at is not None and time.monotonic() - ended_at > SPEAKER_DRAIN_SECONDS:
+            stream.cancel()
+            return None
+        return stream.settled_sample()
+
     def _totals(self):
         if self.capture:
             snapshot = self.capture.summary()
@@ -116,10 +128,12 @@ class LiveTranscription:
         try:
             self.store.update_job(self.job['id'], state='running', detail='Listening for a pause')
             decode, close_decoder = self.decoder_factory()
+            ended_at = None
             while not self._cancelled.is_set():
                 totals, ended, paused = self._totals()
                 if ended:
                     self.finish()
+                    ended_at = ended_at or time.monotonic()
                 progressed = False
                 for source in self.sources:
                     if self._cancelled.is_set():
@@ -127,16 +141,20 @@ class LiveTranscription:
                     if self.yield_to():
                         continue
                     start = self._positions[source]
-                    if start >= totals.get(source, 0):
+                    total = totals.get(source, 0)
+                    gate = self._speaker_gate(source, paused, ended_at)
+                    available = total if gate is None else min(total, gate)
+                    if start >= available:
                         continue
                     left = max(0, start - LEFT_CONTEXT) if self.timed else start
                     count = CORE_LIMIT + RIGHT_CONTEXT + start - left
                     data = (self.capture.read_audio(source, left, count) if self.capture else
-                            self.store.read_audio(self.meeting_id, source, left, min(left + count, totals[source])))
-                    owned = data[start - left:]
+                            self.store.read_audio(self.meeting_id, source, left, min(left + count, total)))
+                    # Audio past the gate still gives recognition its right context.
+                    owned = data[start - left:available - left]
                     segments = self.store.speaker_segments(self.meeting_id, source, start / RATE,
-                                                          (left + data.size) / RATE)
-                    boundary = next_boundary(owned, final=ended or paused,
+                                                          (start + owned.size) / RATE)
+                    boundary = next_boundary(owned, final=(ended or paused) and available >= total,
                                              speaker_cuts=turn_boundaries(segments, start))
                     if boundary is None:
                         continue
@@ -168,7 +186,7 @@ class LiveTranscription:
                     progressed = True
                 if ended and all(self._positions[s] >= totals.get(s, 0) for s in self.sources):
                     # Drain final speaker events without making transcript completion
-                    # depend indefinitely on a remote socket.
+                    # wait indefinitely on a slow speaker model.
                     for stream in self.streams.values():
                         stream.thread.join(timeout=6)
                         if stream.thread.is_alive():

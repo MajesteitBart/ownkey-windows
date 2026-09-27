@@ -33,7 +33,7 @@ class ProviderSnapshotTests(unittest.TestCase):
                    'meetings_audio_api_key': 'synthetic-audio-secret',
                    'rewrite_provider': 'openrouter', 'rewrite_model': 'approved-text',
                    'rewrite_endpoint': 'https://approved.invalid/text', 'rewrite_api_key': 'synthetic-text-secret',
-                   'pyannote_api_key': 'synthetic-speaker-secret', 'vocabulary': ['SyntheticApproved']}
+                   'vocabulary': ['SyntheticApproved']}
             calls = []
             def cloud(engine, key, wav, language, vocabulary):
                 calls.append(('audio', engine, key, vocabulary))
@@ -42,14 +42,14 @@ class ProviderSnapshotTests(unittest.TestCase):
                 calls.append(('text', snapshot))
                 return json.dumps({'overview': 'Synthetic summary.', 'decisions': [], 'actions': [], 'questions': []})
             class Diarizer:
-                def diarize_wav(self, *args, **kwargs):
+                def info(self):
+                    return {'configured': True, 'installed': True, 'runtime': True, 'error': ''}
+                def diarize(self, samples, **kwargs):
+                    calls.append(('speakers', len(samples)))
                     return []
-            def diarizer(snapshot):
-                calls.append(('speakers', snapshot))
-                return Diarizer()
             store = MeetingStore(directory)
             service = MeetingService(store, get_config=lambda: cfg, cloud_transcriber=cloud,
-                                     chat=chat, diarizer_factory=diarizer)
+                                     chat=chat, diarizer=Diarizer())
             started, release = threading.Event(), threading.Event()
             original = service._run_draft
             blocker = store.create_job(store.create_meeting('Synthetic queue blocker', {})['id'], 'draft')
@@ -73,12 +73,12 @@ class ProviderSnapshotTests(unittest.TestCase):
                     store.add_chunk(mid, 'mic', 0, 0, 16000, str(path))
                     store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
                                                  'start': 0, 'end': 1, 'text': 'Synthetic source.'}])
-                    queued.append(getattr(service, kind)(mid, remote_ok=True))
+                    options = {} if kind == 'label_speakers' else {'remote_ok': True}
+                    queued.append(getattr(service, kind)(mid, **options))
                 cfg.update(meetings_audio_provider='openai', meetings_audio_model='unapproved-audio',
                            meetings_audio_endpoint='https://unapproved.invalid/audio', meetings_audio_api_key='changed',
                            rewrite_provider='openai', rewrite_model='unapproved-text',
-                           rewrite_endpoint='https://unapproved.invalid/text', rewrite_api_key='changed',
-                           pyannote_api_key='changed')
+                           rewrite_endpoint='https://unapproved.invalid/text', rewrite_api_key='changed')
                 cfg['vocabulary'].append('Unapproved')
                 release.set()
                 self.assertTrue(wait_for(lambda: all(store.get_job(j['id'])['state'] in ('done', 'error') for j in queued)))
@@ -90,11 +90,12 @@ class ProviderSnapshotTests(unittest.TestCase):
                         self.assertEqual(call[1]['endpoint'], 'https://approved.invalid/audio')
                         self.assertEqual(call[1]['model'], 'approved-audio')
                         self.assertEqual(call[2:], ('synthetic-audio-secret', ['SyntheticApproved']))
-                    else:
+                    elif call[0] == 'text':
                         self.assertEqual(call[1]['rewrite_provider'], 'openrouter')
                         self.assertEqual(call[1]['rewrite_model'], 'approved-text')
                         self.assertEqual(call[1]['rewrite_api_key'], 'synthetic-text-secret')
-                        self.assertEqual(call[1]['pyannote_api_key'], 'synthetic-speaker-secret')
+                    else:
+                        self.assertEqual(call[1], 16000, 'speaker labels read the saved track on this PC')
                 self.assertNotIn('-secret', json.dumps(store.list_jobs()))
             finally:
                 release.set()
@@ -152,12 +153,12 @@ class DeletionTests(unittest.TestCase):
                 'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'synthetic',
                 'meetings_audio_endpoint': 'https://example.invalid/audio', 'meetings_audio_api_key': 'synthetic',
                 'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid/text',
-                'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic', 'pyannote_api_key': 'synthetic',
-                'meetings_auto_speakers': True, 'meetings_auto_summary': True,
-                'meetings_upload_policy': 'allow', 'meetings_remote_policy': 'allow'},
+                'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic',
+                'meetings_auto_speakers': True, 'meetings_auto_summary': True, 'meetings_remote_policy': 'allow'},
                 cloud_transcriber=lambda *args: 'Synthetic replacement must be cancelled.',
                 chat=lambda *args: self.fail('Cancelled transcription queued analysis'),
-                diarizer_factory=lambda cfg: self.fail('Cancelled transcription queued speakers'))
+                diarizer=type('Diarizer', (), {'info': lambda self: {'configured': True, 'installed': True, 'runtime': True, 'error': ''},
+                    'diarize': lambda self, *a, **k: self.fail('Cancelled transcription queued speakers')})())
             try:
                 mid = store.create_meeting('Synthetic final-write race', {'mic': {}})['id']
                 store.update_meeting(mid, state='stopped')
@@ -207,14 +208,16 @@ class DeletionTests(unittest.TestCase):
                         return []
                     return json.dumps({'overview': 'Synthetic new output.', 'decisions': [], 'actions': [], 'questions': []})
                 class Diarizer:
-                    diarize_wav = staticmethod(provider)
+                    diarize = staticmethod(provider)
+                    def info(self):
+                        return {'configured': True, 'installed': True, 'runtime': True, 'error': ''}
                 store = MeetingStore(directory)
                 service = MeetingService(store, get_config=lambda: {
                     'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'synthetic',
                     'meetings_audio_endpoint': 'https://example.invalid/audio', 'meetings_audio_api_key': 'synthetic',
                     'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid/text',
-                    'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic', 'pyannote_api_key': 'synthetic'},
-                    cloud_transcriber=provider, chat=provider, diarizer_factory=lambda cfg: Diarizer())
+                    'rewrite_model': 'synthetic', 'rewrite_api_key': 'synthetic'},
+                    cloud_transcriber=provider, chat=provider, diarizer=Diarizer())
                 try:
                     mid = store.create_meeting('Synthetic cancelled job test', {'mic': {}})['id']
                     store.update_meeting(mid, state='stopped')
@@ -223,13 +226,14 @@ class DeletionTests(unittest.TestCase):
                     store.add_chunk(mid, 'mic', 0, 0, 16000, str(path))
                     store.replace_passages(mid, [{'id': 'p0001', 'source': 'mic', 'speaker_id': 'mic',
                                                  'start': 0, 'end': 1, 'text': 'Synthetic saved source.'}])
-                    old = getattr(service, operation)(mid, remote_ok=True)
+                    options = {} if operation == 'label_speakers' else {'remote_ok': True}
+                    old = getattr(service, operation)(mid, **options)
                     self.assertTrue(started.wait(3))
                     with patch('meetings.service.shutil.rmtree', side_effect=PermissionError('Synthetic file lock')):
                         with self.assertRaises(MeetingError):
                             service.delete_meeting(mid)
                     self.assertEqual(store.get_job(old['id'])['state'], 'cancelled')
-                    fresh = getattr(service, operation)(mid, remote_ok=True)
+                    fresh = getattr(service, operation)(mid, **options)
                     self.assertNotEqual(old['id'], fresh['id'])
                     release.set()
                     self.assertTrue(wait_for(lambda: store.get_job(fresh['id'])['state'] in ('done', 'error', 'cancelled')))

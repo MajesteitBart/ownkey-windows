@@ -95,8 +95,8 @@
   }
   function consentDialog(consent) {
     const policyKey = consent.policy_key || 'remote';
-    const upload = consent.kind === 'upload' || consent.kind === 'transcribe';
-    const liveConsent = policyKey === 'live_speakers' || policyKey === 'live_transcription';
+    const upload = consent.kind === 'transcribe';
+    const liveConsent = policyKey === 'live_transcription';
     return new Promise((resolve) => {
       const d = dialog(`<div class="mh"><span class="eyebrow">${upload ? 'Before the first audio upload' : 'Before the first remote analysis'}</span>
         <h2>${esc(consent.title || `Ownkey will send meeting text to ${consent.provider}`)}</h2>
@@ -105,9 +105,9 @@
           <dt>Provider</dt><dd>${esc(consent.provider)} · <span class="mono">${esc(consent.model)}</span><span class="ink-3">${esc(consent.host)}</span></dd>
           <dt>Sent</dt><dd>${(consent.sent || []).map((s) => `<span class="pill ${upload ? 'amber' : ''}">${esc(s)}</span>`).join('')}</dd>
           <dt>Not sent</dt><dd>${(consent.not_sent || []).map((s) => `<span class="pill green">${esc(s)}</span>`).join('')}</dd>
-        </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${liveConsent ? (policyKey === 'live_speakers' ? 'live speaker labels' : 'live transcription') : esc(consent.provider)}</label></div>
+        </dl><div style="margin-top:14px"><label class="check"><input type="checkbox" data-remember>Don’t ask again for ${liveConsent ? 'live transcription' : esc(consent.provider)}</label></div>
         ${consent.retention ? `<p class="hint" style="margin-top:8px">${esc(consent.retention)}</p>` : ''}</div>
-        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${liveConsent ? (policyKey === 'live_speakers' ? 'Start live speaker labels' : 'Start live transcription') : consent.kind === 'transcribe' ? 'Upload and transcribe' : upload ? 'Upload and label speakers' : 'Send and continue'}</button></div>`);
+        <div class="mf"><button class="btn quiet" data-no>Cancel</button><button class="btn primary" data-yes>${ico('arrowUp', 14, 2.2)}${liveConsent ? 'Start live transcription' : upload ? 'Upload and transcribe' : 'Send and continue'}</button></div>`);
       $('[data-no]', d.root).onclick = () => { d.close(); resolve(false); };
       $('[data-yes]', d.root).onclick = async () => {
         const remember = $('[data-remember]', d.root).checked;
@@ -207,15 +207,15 @@
       <section><span class="eyebrow">During the meeting</span><div class="card card-pad live-options">
         <label class="check"><input type="checkbox" data-live-transcription ${f.live_transcription ? 'checked' : ''}>Transcribe while recording</label>
         <p class="hint">Completed phrases appear after pauses. Long turns are processed in short windows.</p>
-        <label class="check"><input type="checkbox" data-live-speakers ${f.live_speakers ? 'checked' : ''} ${f.live_transcription && (f.system || (f.mic && f.mic_shared)) && (status.speaker_labels || {}).configured ? '' : 'disabled'}>Show live speaker changes with pyannoteAI</label>
-        <p class="hint">Uses call audio and shared microphones. Audio streams to pyannoteAI; Ownkey asks before the first use. ${!(status.speaker_labels || {}).configured ? 'Add a key in Settings to enable this.' : ''}</p>
+        <label class="check"><input type="checkbox" data-live-speakers ${f.live_speakers ? 'checked' : ''} ${f.live_transcription && (f.system || (f.mic && f.mic_shared)) && (status.speaker_labels || {}).configured ? '' : 'disabled'}>Show live speaker changes</label>
+        <p class="hint">Uses call audio and shared microphones. Nemotron 3 Diarization runs on this PC; audio stays here. ${!(status.speaker_labels || {}).configured ? 'Download the speaker model in Settings › Meetings to enable this.' : ''}</p>
       </div></section>
       <section><span class="eyebrow">Readiness</span><div class="card card-pad" style="padding-top:2px;padding-bottom:2px">
         <div class="row"><span class="l">${ico('cpu', 15)}Transcription · ${esc(engine.label || 'Orukeet')}${engine.model ? ` · ${esc(engine.model)}` : ' on this PC'}${engine.follows_dictation ? ' <span class="ink-3">(same as dictation)</span>' : ''}</span><span class="v">${engine.kind === 'cloud'
           ? (engine.configured ? `<span class="pill ${engine.remote ? 'amber' : 'green'}">${engine.remote ? 'Remote' : 'Local endpoint'}</span><span class="meta">${engine.remote ? (status.transcription_policy === 'allow' ? 'upload allowed' : 'asks before uploading') : (f.live_transcription ? 'updates while recording' : 'runs after Stop')}</span>` : '<span class="pill amber">Not configured</span><span class="meta">Settings › Meetings</span>')
           : (model.installed ? `<span class="pill green">Installed</span><span class="meta">${f.live_transcription ? 'updates while recording' : 'runs after Stop'}</span>` : '<span class="pill amber">Not installed</span><span class="meta">recording still works; transcription waits</span>')}</span></div>
         <div class="row"><span class="l">${ico('sparkle', 15)}Summary and questions · ${esc(text.label || text.provider || 'no provider')}${text.model ? ` · ${esc(text.model)}` : ''}</span><span class="v">${text.configured ? `<span class="pill ${text.remote ? 'amber' : 'green'}">${text.remote ? 'Remote' : 'Local'}</span>` : '<span class="pill">Not configured</span>'}<span class="meta">${text.remote ? (status.remote_policy === 'allow' ? 'allowed' : 'asks before first use') : ''}</span></span></div>
-        <div class="row"><span class="l">${ico('users', 15)}Speaker labels · pyannoteAI ${esc(f.live_speakers ? 'Live-1' : (status.speaker_labels || {}).model || '')}</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill amber">Remote</span>' : '<span class="pill">No key</span>'}<span class="meta">${(status.speaker_labels || {}).configured ? ((f.live_speakers ? status.live_speakers_policy : status.upload_policy) === 'allow' ? 'upload allowed' : 'asks before uploading') : 'Settings › Meetings'}</span></span></div>
+        <div class="row"><span class="l">${ico('users', 15)}Speaker labels · Nemotron 3 Diarization on this PC</span><span class="v">${(status.speaker_labels || {}).configured ? '<span class="pill green">Installed</span>' : `<span class="pill">${(status.speaker_labels || {}).installed ? 'Unavailable' : 'Not installed'}</span>`}<span class="meta">${(status.speaker_labels || {}).configured ? (f.live_speakers ? 'updates while recording' : 'after transcription') : 'Settings › Meetings'}</span></span></div>
         <div class="row"><span class="l">${ico('lock', 15)}Library</span><span class="v"><span class="meta mono">${esc(status.library ? status.library.root : '')}</span></span></div>
       </div></section>
       <section><span class="eyebrow">Audio retention for this meeting</span><div class="card card-pad opts">
@@ -248,7 +248,7 @@
         for (let attempt = 0; attempt < 3; attempt++) {
           try { created = await post('/api/meetings', body); break; }
           catch (e) {
-            if (!e.consent || !['live_transcription', 'live_speakers'].includes(e.consent.policy_key)) throw e;
+            if (!e.consent || e.consent.policy_key !== 'live_transcription') throw e;
             if (!await consentDialog(e.consent)) { button.disabled = false; return; }
             body[`${e.consent.policy_key}_ok`] = true;
           }
@@ -365,7 +365,7 @@
       out.push(`<div class="banner red">${ico('alert', 16)}<div class="body"><b>${names[job.kind]} ${interrupted ? 'was interrupted' : 'failed'}.</b><p>${esc(interrupted ? 'Ownkey closed before processing finished. Saved text and notes are unchanged.' : job.error)}</p></div><div class="acts">${retry ? `<button class="btn secondary xs" data-${job.kind}>${ico('refresh', 12)}Retry</button>` : ''}</div></div>`);
     }
     const pj = runningJob('speakers');
-    if (pj && state.tab === 'transcript') out.push(`<div class="banner neutral">${ico('users', 16)}<div class="body"><b><span class="shimmer">Labelling speakers with pyannoteAI</span></b><p>${esc(pj.detail || '')} · the track was uploaded for this step only.</p></div></div>`);
+    if (pj && state.tab === 'transcript') out.push(`<div class="banner neutral">${ico('users', 16)}<div class="body"><b><span class="shimmer">Labelling speakers on this PC</span></b><p>${esc(pj.detail || '')}</p></div></div>`);
     if (sj || dj) out.push(`<div class="banner neutral">${ico('sparkle', 16)}<div class="body"><b><span class="shimmer">${sj ? 'Generating the summary' : 'Drafting the follow-up'}</span></b><p>${esc((sj || dj).detail || '')}</p></div></div>`);
     if (!live() && m.state === 'stopped' && !d.passages.length && !tj && !failed.length && m.audio_state === 'kept') out.push(`<div class="banner neutral">${ico('info', 16)}<div class="body"><b>Not transcribed yet.</b><p>${engine.kind === 'cloud' ? `Transcribing sends the audio to ${esc(engine.label)}${engine.remote ? '; Ownkey asks first' : ' on your local endpoint'}.` : 'Orukeet transcribes on this PC; nothing is uploaded.'}</p></div><div class="acts"><button class="btn secondary xs" data-transcribe>${ico('play', 12)}Transcribe</button></div></div>`);
     return out.join('');
@@ -413,8 +413,8 @@
     const labelled = d.speakers.some((s) => s.id.includes('-'));
     const canLabel = d.passages.length && d.meeting.audio_state === 'kept' && !runningJob() && !live();
     const labelButton = !d.passages.length ? '' : labels.configured
-      ? `<button class="btn secondary xs" data-speakers ${canLabel ? '' : 'disabled'} title="Uploads the call audio track to pyannoteAI; asks first">${ico('users', 12)}${labelled ? 'Redo speaker labels' : 'Add speaker labels'}</button>`
-      : `<button class="btn quiet xs" data-settings-meetings title="Speaker labels need a pyannoteAI key">${ico('users', 12)}Speaker labels: add a key in Settings</button>`;
+      ? `<button class="btn secondary xs" data-speakers ${canLabel ? '' : 'disabled'} title="Runs Nemotron 3 Diarization on this PC">${ico('users', 12)}${labelled ? 'Redo speaker labels' : 'Add speaker labels'}</button>`
+      : `<button class="btn quiet xs" data-settings-meetings title="${esc(labels.installed ? labels.error || '' : 'Speaker labels need the Nemotron 3 Diarization model')}">${ico('users', 12)}${labels.installed ? 'Speaker labels unavailable' : 'Speaker labels: download the model in Settings'}</button>`;
     return `<div class="tx-tools"><div class="field sm">${ico('search', 13)}<input data-search placeholder="Search this transcript" value="${esc(state.query)}">${q ? `<span class="mono ink-3" style="font-size:11px">${shown} of ${d.passages.length}</span>` : ''}</div>${labelButton}<span class="grow"></span><span class="hint">${d.passages.length} passages · rev ${d.meeting.transcript_rev}</span></div>
       <div class="speakers">${speakers}${d.speakers.length ? '<span class="hint" style="align-self:center">Click a name to rename or confirm it.</span>' : ''}</div>${rows.join('')}${empty}`;
   }
@@ -469,7 +469,7 @@
     on('[data-speakers]', (e) => {
       const m = state.detail.meeting;
       const has = (k) => !!(m.sources && m.sources[k]);
-      const run = (tracks) => withConsent((ok) => post(`/api/meetings/${id}/speakers`, { remote_ok: ok, tracks })).then((r) => r && tick()).catch((er) => toast(er.message));
+      const run = (tracks) => post(`/api/meetings/${id}/speakers`, { tracks }).then(() => tick()).catch((er) => toast(er.message));
       if (!(has('mic') && has('system'))) return run(has('system') ? ['system'] : ['mic']);
       const shared = !!(m.sources.mic && m.sources.mic.shared);
       openMenu(e.currentTarget, [

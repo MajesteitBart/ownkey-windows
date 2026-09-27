@@ -182,17 +182,21 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
         self.assertEqual(self.service.summarize(meeting["id"])["kind"], "summary")
 
-    def test_speaker_labels_ask_before_upload_then_split_passages(self):
-        uploads = []
+    def test_speaker_labels_run_on_this_pc_then_split_passages(self):
+        tracks = []
 
         class FakeDiarizer:
-            def diarize_wav(self, data, name, should_stop=None, on_status=None, **options):
-                uploads.append((name, data[:4]))
-                on_status("running")
+            configured = True
+
+            def info(self):
+                return {"configured": self.configured, "installed": self.configured, "runtime": True, "error": ""}
+
+            def diarize(self, samples, should_stop=None, on_progress=None):
+                tracks.append((samples.dtype, samples.size))
+                on_progress(samples.size / 16000, samples.size / 16000)
                 return [{"start": 0.0, "end": 0.45, "speaker": "SPEAKER_00"}, {"start": 0.45, "end": 5.0, "speaker": "SPEAKER_01"}]
 
-        self.service._diarizer_factory = lambda cfg: FakeDiarizer()
-        self.cfg["pyannote_api_key"] = "pk"
+        self.service.diarizer = FakeDiarizer()
         meeting = self.service.start_meeting("Two voices", mic=True, system=True)
         block = np.full(1600, 3000, dtype=np.int16)
         for _ in range(10):
@@ -202,16 +206,11 @@ class ServiceTests(unittest.TestCase):
         self.service.stop()
         self.assertTrue(wait_for(lambda: self.store.list_jobs(meeting["id"], ("done",))))
         self.assertTrue(any(p["source"] == "system" for p in self.store.list_passages(meeting["id"])))
-        with self.assertRaises(ConsentRequired) as consent:
-            self.service.label_speakers(meeting["id"])
-        self.assertEqual(consent.exception.disclosure["policy_key"], "upload")
-        self.assertIn("Call audio track", consent.exception.disclosure["sent"][0])
-        self.assertEqual(uploads, [])
-        job = self.service.label_speakers(meeting["id"], remote_ok=True)
+        job = self.service.label_speakers(meeting["id"])  # no upload, so no consent step
         self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] in ("done", "error")))
         self.assertEqual(self.store.get_job(job["id"])["state"], "done", self.store.get_job(job["id"])["error"])
-        self.assertEqual(uploads[0][0], f"{meeting['id']}-system.wav")
-        self.assertEqual(uploads[0][1], b"RIFF")
+        system_samples = sum(c["n_samples"] for c in self.store.list_chunks(meeting["id"], SYSTEM))
+        self.assertEqual(tracks, [(np.dtype(np.int16), system_samples)], "only the call audio track, as samples")
         speakers = {s["id"]: s for s in self.store.list_speakers(meeting["id"])}
         self.assertEqual(speakers["system-1"]["name"], "Speaker 1")
         self.assertEqual(speakers["system-2"]["confirmed"], 0)
@@ -221,31 +220,24 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("speakers", [e["kind"] for e in self.store.list_events(meeting["id"])])
         # The mic track keeps its own label and its passages.
         self.assertEqual({p["speaker_id"] for p in self.store.list_passages(meeting["id"]) if p["source"] == "mic"}, {"mic"})
-        # Remembered policy skips the question; a missing key is a clear error.
-        self.service.set_policy("upload", "allow")
-        self.assertEqual(self.service.label_speakers(meeting["id"])["kind"], "speakers")
-        self.assertTrue(wait_for(lambda: not self.store.list_jobs(meeting["id"], ("queued", "running"))))
-        self.cfg["pyannote_api_key"] = ""
+        self.assertIn("on this PC", self.store.list_events(meeting["id"])[-1]["detail"])
+        # A missing model is a clear error that points to Settings.
+        self.service.diarizer.configured = False
         with self.assertRaises(MeetingError) as missing:
             self.service.label_speakers(meeting["id"])
-        self.assertIn("pyannoteAI key", str(missing.exception))
-        self.cfg["pyannote_api_key"] = "pk"
+        self.assertIn("Settings > Meetings", str(missing.exception))
+        self.service.diarizer.configured = True
         # Several people share the microphone: label that track too, numbering on.
         self.assertEqual(self.service._speaker_targets(meeting["id"]), ["system"])
         self.service.set_mic_shared(meeting["id"], True)
         self.assertTrue(self.store.get_meeting(meeting["id"])["sources"]["mic"]["shared"])
         self.assertEqual(self.service._speaker_targets(meeting["id"]), ["mic", "system"])
-        self.service.set_policy("upload", "ask")
-        with self.assertRaises(ConsentRequired) as both:
-            self.service.label_speakers(meeting["id"], tracks=["mic", "system"])
-        self.assertIn("Microphone and Call audio", both.exception.disclosure["sent"][0])
-        self.assertNotIn("Microphone track", both.exception.disclosure["not_sent"])
-        uploads.clear()
+        tracks.clear()
         self.service.rename_speaker(meeting["id"], "system-2", "Femke", confirmed=True)
-        job = self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["mic", "system", "bogus"])
+        job = self.service.label_speakers(meeting["id"], tracks=["mic", "system", "bogus"])
         self.assertTrue(wait_for(lambda: self.store.get_job(job["id"])["state"] in ("done", "error")))
         self.assertEqual(self.store.get_job(job["id"])["state"], "done", self.store.get_job(job["id"])["error"])
-        self.assertEqual([u[0] for u in uploads], [f"{meeting['id']}-mic.wav", f"{meeting['id']}-system.wav"])
+        self.assertEqual(len(tracks), 2, "microphone, then call audio")
         names = {s["id"]: s["name"] for s in self.store.list_speakers(meeting["id"])}
         self.assertEqual((names["mic-1"], names["mic-2"]), ("Speaker 1", "Speaker 2"))
         self.assertEqual(names["system-1"], "Speaker 3", "numbering continues across tracks; no second Speaker 1")
@@ -254,7 +246,7 @@ class ServiceTests(unittest.TestCase):
                          ["mic", "system", "mic-1", "mic-2", "system-1", "system-2"], "chips follow the numbering")
         self.assertEqual({p["speaker_id"] for p in self.store.list_passages(meeting["id"]) if p["source"] == "mic"}, {"mic-1", "mic-2"})
         with self.assertRaises(MeetingError):
-            self.service.label_speakers(meeting["id"], remote_ok=True, tracks=["bogus"])
+            self.service.label_speakers(meeting["id"], tracks=["bogus"])
 
     def test_transcription_engine_follows_dictation_or_its_own_provider(self):
         self.cfg.update({"audio_provider": "orukeet", "audio_endpoint": "", "audio_model": "orukeet-onnx-int8"})
@@ -525,14 +517,16 @@ class ShutdownTests(unittest.TestCase):
                             return json.dumps({'overview': 'Synthetic completed summary.', 'decisions': [], 'actions': [], 'questions': []})
                         return [] if kind == 'speakers' else 'Synthetic delayed text.'
                     class Diarizer:
-                        diarize_wav = staticmethod(provider)
+                        diarize = staticmethod(provider)
+                        def info(self):
+                            return {'configured': True, 'installed': True, 'runtime': True, 'error': ''}
                     store = MeetingStore(directory)
                     service = MeetingService(store, get_config=lambda: {
                         'meetings_audio_provider': 'mistral', 'meetings_audio_model': 'test',
                         'meetings_audio_endpoint': 'https://example.invalid', 'meetings_audio_api_key': 'synthetic',
                         'rewrite_provider': 'openrouter', 'rewrite_endpoint': 'https://example.invalid',
                         'rewrite_model': 'test', 'rewrite_api_key': 'synthetic'},
-                        cloud_transcriber=provider, diarizer_factory=lambda cfg: Diarizer(), chat=provider)
+                        cloud_transcriber=provider, diarizer=Diarizer(), chat=provider)
                     mid = store.create_meeting('Synthetic shutdown test', {'mic': {}})['id']
                     store.update_meeting(mid, state='stopped')
                     path = store.audio_dir(mid, MIC) / 'test.wav'

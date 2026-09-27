@@ -57,6 +57,7 @@ from providers import (
     provider_requires_key,
     transcribe_audio,
 )
+from local_diarization import NEMOTRON_DIARIZATION, LocalDiarizer
 from local_models import BUSY_STAGES, MODEL_ID, ORUKEET, LocalModelManager, ModelError
 from local_transcription import LocalTranscriber, SAMPLE_RATE
 import brand_ui
@@ -153,16 +154,13 @@ DEFAULT_CONFIG = {
     "filler_languages": ["en", "nl"],
     "custom_fillers": "",
     # Meetings: remote analysis policy, auto-summary after transcription, default audio retention,
-    # and speaker labels through pyannoteAI (audio upload policy, key, auto-run).
+    # and speaker labels on this PC after every transcription.
     "meetings_remote_policy": "ask",
-    "meetings_upload_policy": "ask",
     "meetings_transcription_policy": "ask",
     "meetings_live_transcription_policy": "ask",
-    "meetings_live_speakers_policy": "ask",
     "meetings_auto_summary": False,
     "meetings_auto_speakers": False,
     "meetings_retention": "days7",
-    "pyannote_api_key": "",
     # Meeting transcription: "same" follows the dictation provider; otherwise
     # any audio provider with its own key, endpoint and model.
     "meetings_audio_provider": "same",
@@ -497,6 +495,9 @@ def load_config() -> dict:
         cfg["rewrite_hotkey"] = "off"
     cfg.pop("local_rewrite_directory", None)
     cfg.pop("local_rewrite_idle_timeout_minutes", None)
+    # Speaker labels moved from pyannoteAI to this PC: drop the stored key and upload policies.
+    for key in ("pyannote_api_key", "meetings_upload_policy", "meetings_live_speakers_policy"):
+        cfg.pop(key, None)
     cfg["rewrite_provider"] = normalize_provider(cfg.get("rewrite_provider"), "mistral")
     if cfg["rewrite_provider"] not in REWRITE_PROVIDER_IDS:
         cfg["rewrite_provider"] = DEFAULT_CONFIG["rewrite_provider"]
@@ -521,10 +522,8 @@ def load_config() -> dict:
     cfg["filler_languages"] = normalize_filler_languages(cfg.get("filler_languages"))
     cfg["custom_fillers"] = ", ".join(normalize_vocabulary(cfg.get("custom_fillers", "")))
     cfg["meetings_remote_policy"] = "allow" if cfg.get("meetings_remote_policy") == "allow" else "ask"
-    cfg["meetings_upload_policy"] = "allow" if cfg.get("meetings_upload_policy") == "allow" else "ask"
     cfg["meetings_transcription_policy"] = "allow" if cfg.get("meetings_transcription_policy") == "allow" else "ask"
-    for key in ('meetings_live_transcription_policy', 'meetings_live_speakers_policy'):
-        cfg[key] = 'allow' if cfg.get(key) == 'allow' else 'ask'
+    cfg['meetings_live_transcription_policy'] = 'allow' if cfg.get('meetings_live_transcription_policy') == 'allow' else 'ask'
     choice = str(cfg.get("meetings_audio_provider") or "same").strip().lower()
     if choice != "same":
         choice = normalize_provider(choice, "same")
@@ -537,7 +536,6 @@ def load_config() -> dict:
     cfg["meetings_auto_speakers"] = bool(cfg.get("meetings_auto_speakers", False))
     if cfg.get("meetings_retention") not in MEETING_RETENTION_LABELS:
         cfg["meetings_retention"] = "days7"
-    cfg["pyannote_api_key"] = str(cfg.get("pyannote_api_key") or "").strip()
     return cfg
 
 
@@ -1541,6 +1539,8 @@ class SettingsWindow:
         self._model_updates = None
         self._save_cancel = None
         self._model_poll_id = None
+        self._speaker_poll_id = None
+        self._speaker_updates = None
         self._save_poll_id = None
         self.pages: dict[str, tk.Frame] = {}
         self.current_page = None
@@ -2255,19 +2255,77 @@ class SettingsWindow:
             card, "audio", AUDIO_PROVIDER_IDS, prefix="meetings_audio", first_label="Same as dictation", first_value="same")
 
         card = self._card(page).inner
-        self._heading(card, "Speaker labels", "pyannoteAI · remote")
-        tk.Label(card, text="Who said what, from pyannoteAI's hosted diarization. The call audio track is uploaded "
-                 "for that step only; the transcript and your notes never are. Uploads are deleted within 48 hours "
-                 "and are not used for training. Without a key, passages keep their Microphone and Call audio labels.",
+        self._heading(card, "Speaker labels", "Local · 107 MB download")
+        tk.Label(card, text="Who said what, from NVIDIA Nemotron 3 Diarization running on this PC. It separates up to "
+                 "eight voices per track; audio never leaves this PC. Without the model, passages keep their "
+                 "Microphone and Call audio labels.",
                  wraplength=560, bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, justify="left", anchor="w",
                  font=self.type.small).pack(fill="x", pady=(0, 12))
-        pyannote_field = self._field(card, "pyannoteAI API key", "Create one at dashboard.pyannote.ai.")
-        e_pyannote = self._entry(pyannote_field.control, show="•")
-        e_pyannote.pack(fill="x")
-        e_pyannote.set_value(cfg.get("pyannote_api_key", ""))
+        speaker_status = tk.StringVar(win, value="Not downloaded")
+        tk.Label(card, textvariable=speaker_status, wraplength=560, justify="left", bg=brand_ui.GRAPHITE,
+                 fg=brand_ui.BONE, anchor="w", font=self.type.strong).pack(fill="x", pady=(0, 6))
+        speaker_progress = ttk.Progressbar(card, mode="determinate", maximum=100, style="Ownkey.Horizontal.TProgressbar")
+        speaker_actions = tk.Frame(card, bg=brand_ui.GRAPHITE)
+        speaker_actions.pack(fill="x", pady=(0, 10))
+        speaker_models = self.app.speaker_models
+
+        def speaker_action(action):
+            try:
+                action()
+            except Exception as exc:
+                messagebox.showerror(APP_NAME, str(exc), parent=win)
+
+        speaker_download = self._button(speaker_actions, "Download", lambda: speaker_action(speaker_models.start_download),
+                                        variant="solid")
+        speaker_cancel = self._button(speaker_actions, "Cancel download", speaker_models.cancel)
+        speaker_remove = self._button(speaker_actions, "Remove download", lambda: speaker_action(speaker_models.remove),
+                                      variant="danger")
+        link = tk.Label(card, text="huggingface.co/nvidia/Nemotron-3-Diarization", bg=brand_ui.GRAPHITE,
+                        fg=brand_ui.ORANGE, cursor="hand2", anchor="w", font=self.type.mono_body)
+        link.pack(fill="x")
+        link.bind("<Button-1>", lambda _event: webbrowser.open("https://huggingface.co/nvidia/Nemotron-3-Diarization"))
+        tk.Label(card, text="Weights under the OpenMDW License 1.1. Runs through NVIDIA NeMo-Speech.cpp, included with Ownkey.",
+                 wraplength=560, justify="left", bg=brand_ui.GRAPHITE, fg=brand_ui.ASH, anchor="w",
+                 font=self.type.small).pack(fill="x", pady=(2, 10))
+        self._speaker_updates = speaker_models.subscribe()
+        speaker_state = [speaker_models.snapshot()]
+
+        def poll_speaker_model():
+            if self._win is not win or self._speaker_updates is None:
+                return
+            try:
+                speaker_state[0] = self._speaker_updates.get_nowait()
+            except queue.Empty:
+                pass
+            state = speaker_state[0]
+            busy = state.stage in BUSY_STAGES
+            installed = speaker_models.files_present() and state.stage == "Installed"
+            runtime_error = self.app.local_diarizer.runtime_error() if installed else ""
+            if busy:
+                percent = 100 * state.completed / state.total if state.total else 0
+                speaker_status.set(f"{state.stage} · {percent:.0f}%" if state.total else state.stage)
+                speaker_progress.configure(value=percent)
+                speaker_progress.pack(fill="x", pady=(0, 8), before=speaker_actions)
+            else:
+                speaker_progress.pack_forget()
+                text = ("Installed · Unavailable" if runtime_error else "Installed") if installed else state.stage
+                detail = state.error or runtime_error
+                speaker_status.set(text + ("\n" + detail[:180] if detail else ""))
+            for button in (speaker_download, speaker_cancel, speaker_remove):
+                button.pack_forget()
+            if busy:
+                speaker_cancel.pack(side="left")
+            elif not installed:
+                speaker_download.pack(side="left")
+            if speaker_models.path.exists() and not busy:
+                speaker_remove.pack(side="left", padx=(8 if not installed else 0, 0))
+            self._speaker_poll_id = self.app._ui_root.after(250, poll_speaker_model)
+
+        self._speaker_poll_id = self.app._ui_root.after(0, poll_speaker_model)
         v_auto_speakers = tk.BooleanVar(win, value=bool(cfg.get("meetings_auto_speakers", False)))
         self._toggle(self._row(card, "Label speakers after every transcription",
-                               "Runs only after you have allowed the upload once in the meeting window.", last=True),
+                               "Runs on this PC once the model is downloaded. Uses the tracks marked as shared.",
+                               last=True),
                      v_auto_speakers).pack()
 
         card = self._card(page).inner
@@ -2347,7 +2405,6 @@ class SettingsWindow:
                 messagebox.showwarning(APP_NAME, "Choose an endpoint and model for meeting transcription before saving.", parent=win)
                 self.show_page("meetings")
                 return
-            new_cfg["pyannote_api_key"] = e_pyannote.value().strip()
             new_cfg["meetings_auto_speakers"] = v_auto_speakers.get()
             new_cfg["meetings_auto_summary"] = v_auto_summary.get()
             new_cfg["meetings_retention"] = next(
@@ -2403,7 +2460,7 @@ class SettingsWindow:
         win.tk.call("tk::PlaceWindow", win._w, "center")
 
     def _on_close(self):
-        for name in ("_model_poll_id", "_save_poll_id"):
+        for name in ("_model_poll_id", "_speaker_poll_id", "_save_poll_id"):
             timer = getattr(self, name, None)
             if timer is not None:
                 self.app._ui_root.after_cancel(timer)
@@ -2413,6 +2470,9 @@ class SettingsWindow:
         if self._model_updates is not None:
             self._model_subscription_owner.unsubscribe(self._model_updates)
             self._model_updates = None
+        if self._speaker_updates is not None:
+            self.app.speaker_models.unsubscribe(self._speaker_updates)
+            self._speaker_updates = None
         if self._win:
             try:
                 self._win.destroy()
@@ -2444,6 +2504,10 @@ class OwnkeyApp:
             idle_minutes=self.cfg["local_model_idle_timeout_minutes"],
         )
         threading.Thread(target=self.local_models.check_installation, daemon=True).start()
+        # Meeting speaker labels: Nemotron 3 Diarization, downloaded on request.
+        self.speaker_models = LocalModelManager(model=NEMOTRON_DIARIZATION)
+        self.local_diarizer = LocalDiarizer(self.speaker_models)
+        threading.Thread(target=self.speaker_models.check_installation, daemon=True).start()
         # Preserve insertion order when a new recording starts during decoding.
         self._transcription_queue = queue.Queue()
         self._record_cfg = dict(self.cfg)
@@ -2504,7 +2568,7 @@ class OwnkeyApp:
             self.meetings = MeetingService(
                 MeetingStore(), get_config=lambda: self.cfg, set_config=self._meeting_config_changed,
                 local_models=self.local_models, local_transcriber=self.local_transcriber,
-                get_local_audio=self._meeting_local_audio,
+                get_local_audio=self._meeting_local_audio, diarizer=self.local_diarizer,
                 get_rewrite_key=get_rewrite_api_key, get_audio_key=get_effective_api_key, notify=self._notify_error,
                 open_settings=self._open_settings, on_capture_change=self._meeting_capture_changed,
                 dictation_busy=lambda: bool(self._recording),
@@ -3397,6 +3461,7 @@ class OwnkeyApp:
                 recording[4].close()
         self._transcription_queue.put(None)
         self.local_models.close()
+        self.speaker_models.close()
         self.local_transcriber.close()
         for manager, service in getattr(self, "_local_audio_locations", {}).values():
             if service is not self.local_transcriber:
@@ -3493,6 +3558,9 @@ if __name__ == "__main__":
     if "--local-smoke-test" in sys.argv:
         from local_transcription import run_smoke_test
         sys.exit(run_smoke_test(sys.argv[sys.argv.index("--local-smoke-test") + 1:]))
+    if "--diarization-smoke-test" in sys.argv:
+        from local_diarization import run_smoke_test as run_diarization_smoke_test
+        sys.exit(run_diarization_smoke_test(sys.argv[sys.argv.index("--diarization-smoke-test") + 1:]))
     if "--ui-smoke-test" in sys.argv:
         sys.exit(brand_ui.run_smoke_test(sys.argv[sys.argv.index("--ui-smoke-test") + 1:],
                                          resource_path("assets", "fonts")))

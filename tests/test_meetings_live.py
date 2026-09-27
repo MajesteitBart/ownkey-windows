@@ -3,11 +3,10 @@ import tempfile
 import threading
 import time
 import unittest
-import json
-import queue
 import io
 import wave
-from types import SimpleNamespace
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import numpy as np
 
@@ -15,7 +14,9 @@ from meetings import audio
 from meetings.capture import ArraySource, CaptureSession, MIC
 from meetings.segmentation import (next_boundary, owned_tokens, turn_boundaries, window_passages,
                                     CORE_LIMIT, RATE)
-from meetings.service import ConsentRequired, MeetingService
+from local_diarization import DiarizationError
+from meetings import streaming
+from meetings.service import ConsentRequired, MeetingError, MeetingService
 from meetings.store import MeetingStore
 from meetings.streaming import StreamClock, LiveSpeakerStream
 
@@ -123,52 +124,131 @@ class StreamClockTests(unittest.TestCase):
         self.assertIsNone(clock.at(5))
         self.assertIsNone(clock.at(float('nan')))
 
-    def test_transport_sends_float_frames_paced_and_drains_final_events(self):
-        class Socket:
-            def __init__(self):
-                self.messages = queue.Queue()
-                self.frames = []
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                self.close()
-            def close(self):
-                self.messages.put(None)
-            def send(self, data):
-                if isinstance(data, bytes):
-                    self.frames.append((time.monotonic(), data))
-                    if len(self.frames) == 1:
-                        self.messages.put(json.dumps({'type':'diarization_speaker_start',
-                            'data':{'timestamp':0.,'speaker':'A'}}))
-                else:
-                    self.messages.put(json.dumps({'type':'diarization_speaker_end',
-                        'data':{'timestamp':.45,'speaker':'A'}}))
-                    self.messages.put(None)
-            def recv(self, timeout):
-                try:
-                    item = self.messages.get(timeout=timeout)
-                except queue.Empty:
-                    raise TimeoutError
-                if item is None:
-                    raise EOFError
-                return item
-        sock = Socket()
-        http = SimpleNamespace(post=lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {'url':'wss://example.invalid/session'}))
+
+
+class LaggingStream:
+    """Speech energy becomes speaker 0. Like model chunks, frames commit
+    LAG seconds behind the input until the stream finishes."""
+    LAG = 2.0
+
+    def __init__(self):
+        self.audio, self.committed, self.finished, self.closed = [], 0, False, False
+
+    def push(self, samples):
+        assert samples.dtype == np.float32
+        self.audio.append(samples)
+
+    def finish(self):
+        self.finished = True
+
+    def new_probs(self):
+        data = np.concatenate(self.audio) if self.audio else np.zeros(0, np.float32)
+        frames = data.size // 160
+        ready = frames if self.finished else max(0, frames - round(self.LAG * 100))
+        chunk = data[self.committed * 160:ready * 160].reshape(-1, 160)
+        probs = np.zeros((len(chunk), 2), np.float32)
+        probs[:, 0] = (np.abs(chunk).mean(axis=1) > .01) * .95
+        self.committed = ready
+        return probs
+
+    def close(self):
+        self.closed = True
+
+
+class FakeDiarizer:
+    def __init__(self):
+        self.configured, self.error, self.streams = True, None, []
+
+    def info(self):
+        return {'configured': self.configured, 'installed': self.configured, 'runtime': True, 'error': '',
+                'provider': 'Nemotron 3 Diarization', 'model': 'synthetic', 'host': '', 'remote': False}
+
+    @contextmanager
+    def lease(self, geometry):
+        if self.error:
+            raise DiarizationError(self.error)
+        model = SimpleModel()
+        yield model
+        self.streams.extend(model.streams)
+
+
+class SimpleModel:
+    num_speakers, seconds_per_frame = 2, .01
+
+    def __init__(self):
+        self.streams = []
+
+    def open_stream(self):
+        self.streams.append(LaggingStream())
+        return self.streams[-1]
+
+
+class LocalStreamTests(unittest.TestCase):
+    def stream(self, diarizer=None, **options):
         events, states = [], []
-        stream = LiveSpeakerStream('synthetic-key', 'mic', paused=lambda:False,
-            on_event=lambda *a:events.append(a), on_status=lambda *a:states.append(a),
-            session=http, connect=lambda *a, **k:sock)
-        stream.feed(16000, speech(.5))
+        stream = LiveSpeakerStream('mic', diarizer=diarizer or FakeDiarizer(), on_event=lambda *a: events.append(a),
+                                   on_status=lambda *a: states.append(a), **options)
+        return stream, events, states
+
+    def test_turns_arrive_in_saved_time_and_the_model_stream_closes(self):
+        diarizer = FakeDiarizer()
+        stream, events, states = self.stream(diarizer)
+        stream.feed(16000, np.concatenate((speech(1), np.zeros(RATE, dtype=np.int16))))
+        self.assertEqual(stream.settled_sample(), 0, 'nothing is final before the model runs')
         stream.finish()
         stream.start()
         stream.thread.join(4)
         self.assertFalse(stream.thread.is_alive())
-        self.assertEqual(len(sock.frames), 5)
-        self.assertTrue(all(len(data)==6400 for _,data in sock.frames))
-        self.assertGreaterEqual(sock.frames[-1][0] - sock.frames[0][0], .38)
-        self.assertEqual([e[-1] for e in events], [True,False])
-        self.assertAlmostEqual(events[-1][-2], 1.45)
-        self.assertEqual(states[-1][1], 'stopped')
+        self.assertEqual([(e[2], round(e[3], 3), e[4]) for e in events], [('1', 1.0, True), ('1', 2.079, False)])
+        self.assertEqual([state[1] for state in states], ['connecting', 'listening', 'stopped'])
+        self.assertEqual(len({state[3] for state in states} | {e[1] for e in events}), 1, 'one label namespace')
+        self.assertIsNone(stream.settled_sample())
+        self.assertTrue(diarizer.streams[0].closed)
+
+    def test_settled_position_trails_the_model_and_covers_reported_turns(self):
+        stream, events, _states = self.stream()
+        stream.feed(0, np.concatenate((speech(1), np.zeros(4 * RATE, dtype=np.int16))))
+        stream.start()
+        # 5 s fed, 3 s committed by the lagging model, minus the binarizer's lookback.
+        self.assertTrue(wait_for(lambda: stream.settled_sample() == round((3 - .525) * RATE)))
+        self.assertEqual([e[4] for e in events], [True, False])
+        self.assertLess(events[-1][3] * RATE, stream.settled_sample())
+        stream.cancel()
+        stream.thread.join(2)
+        self.assertIsNone(stream.settled_sample())
+
+    def test_dictation_holds_the_model_and_the_queue_keeps_audio(self):
+        holding = threading.Event()
+        holding.set()
+        stream, events, _states = self.stream(yield_to=holding.is_set)
+        stream.feed(0, np.concatenate((speech(1), np.zeros(RATE, dtype=np.int16))))
+        stream.finish()
+        stream.start()
+        time.sleep(.3)
+        self.assertEqual(events, [])
+        holding.clear()
+        stream.thread.join(4)
+        self.assertEqual([e[4] for e in events], [True, False])
+
+    def test_a_model_that_cannot_keep_up_stops_live_labels_only(self):
+        with patch.object(streaming, 'QUEUE_BLOCKS', 3):
+            stream, events, states = self.stream()
+        stream.feed(0, speech(1))
+        stream.start()
+        stream.thread.join(4)
+        self.assertEqual(states[-1][1], 'error')
+        self.assertIn('could not keep up', states[-1][2])
+        self.assertIsNone(stream.settled_sample())
+
+    def test_missing_model_is_reported_and_releases_transcription(self):
+        diarizer = FakeDiarizer()
+        diarizer.error = 'The speaker model is not downloaded. Download it in Settings > Meetings.'
+        stream, events, states = self.stream(diarizer)
+        stream.start()
+        stream.thread.join(4)
+        self.assertEqual(states[-1][1], 'error')
+        self.assertIn('Settings > Meetings', states[-1][2])
+        self.assertIsNone(stream.settled_sample())
 
 
 class CapturePauseTests(unittest.TestCase):
@@ -240,8 +320,9 @@ class LiveServiceTests(unittest.TestCase):
             self.sources = {s: ArraySource(s) for s in ('mic', 'system') if wants[s]}
             return list(self.sources.values())
 
+        self.diarizer = FakeDiarizer()
         self.service = MeetingService(self.store, get_config=lambda: self.cfg, local_models=FakeModels(),
-            local_transcriber=self.recognizer, source_factory=sources)
+            local_transcriber=self.recognizer, source_factory=sources, diarizer=self.diarizer)
         self.addCleanup(self.service.close)
 
     def start(self, **options):
@@ -321,18 +402,46 @@ class LiveServiceTests(unittest.TestCase):
         finally:
             restarted.close()
 
-    def test_cloud_and_speaker_permissions_are_separate_and_precede_capture(self):
+    def test_cloud_permission_precedes_capture_and_live_speakers_need_only_the_model(self):
         self.cfg.update(meetings_audio_provider='mistral', meetings_audio_endpoint='https://example.invalid/audio',
-                        meetings_audio_model='test', meetings_audio_api_key='test', pyannote_api_key='test')
+                        meetings_audio_model='test', meetings_audio_api_key='test')
         with self.assertRaises(ConsentRequired) as ask:
             self.start(mic_shared=True, live_speakers=True)
         self.assertEqual(ask.exception.disclosure['policy_key'], 'live_transcription')
         self.assertEqual(self.store.list_meetings(), [])
         self.assertEqual(self.sources, {})
-        with self.assertRaises(ConsentRequired) as ask:
+        self.diarizer.configured = False
+        with self.assertRaisesRegex(MeetingError, 'Settings > Meetings'):
             self.start(mic_shared=True, live_speakers=True, live_transcription_ok=True)
-        self.assertEqual(ask.exception.disclosure['policy_key'], 'live_speakers')
         self.assertEqual(self.store.list_meetings(), [])
+        with self.assertRaisesRegex(MeetingError, 'shared microphone'):
+            self.diarizer.configured = True
+            self.start(live_speakers=True, live_transcription_ok=True)
+        meeting = self.start(mic_shared=True, live_speakers=True, live_transcription_ok=True)
+        self.assertEqual(list(self.service._live[meeting['id']].streams), ['mic'])
+
+    def test_live_passages_wait_for_final_speaker_turns(self):
+        mid = self.start(mic_shared=True, live_speakers=True)['id']
+        self.phrase()  # 4 s of speech, then 1 s of quiet; the model has settled about 2.5 s
+        time.sleep(.5)
+        self.assertEqual(self.store.list_passages(mid), [], 'the window waits for its speaker turns')
+        self.sources['mic'].push(np.zeros(3 * RATE, dtype=np.int16))
+        self.assertTrue(wait_for(lambda: self.store.list_passages(mid)))
+        passage = self.store.list_passages(mid)[0]
+        self.assertTrue(passage['speaker_id'].startswith('live-mic-'), passage['speaker_id'])
+        self.assertEqual(self.store.get_speaker(mid, passage['speaker_id'])['name'], 'Speaker 1')
+        self.service.stop()
+        self.assertTrue(wait_for(lambda: self.store.list_jobs(mid, ('done',))))
+        self.assertEqual(self.store.processed_samples(mid, 'mic'), 8 * RATE)
+
+    def test_pause_flushes_text_without_waiting_for_speaker_turns(self):
+        mid = self.start(mic_shared=True, live_speakers=True)['id']
+        self.phrase()
+        self.service.pause()
+        self.assertTrue(wait_for(lambda: self.store.list_passages(mid)))
+        self.service.resume()
+        self.service.stop()
+        self.assertTrue(wait_for(lambda: self.store.list_jobs(mid, ('done',))))
 
     def test_delete_while_decoder_runs_cannot_recreate_passages(self):
         self.recognizer.block = threading.Event()
