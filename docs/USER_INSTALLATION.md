@@ -14,6 +14,29 @@ This guide is for people who want to install and use Ownkey on Windows 10 or
 Rewriting is optional and can use OpenAI, Anthropic, Google Gemini, Mistral,
 OpenRouter, a custom OpenAI-compatible server, or local Ollama.
 
+### For local transcription
+
+Local (Orukeet) runs on a 64-bit Intel or AMD CPU. No dedicated graphics card,
+Python installation, or CUDA setup is needed.
+
+- Budget **2 GB of available RAM** for short dictation, in addition to Windows
+  and other apps. Our test process peaked at about 1.3 GB; longer recordings
+  can use more. This is guidance, not a tested minimum.
+- Allow **1.3 GB of free disk space** for downloading and extracting the model,
+  in addition to the app. The download is **487 MB** and the installed model
+  occupies **672 MB**.
+- Internet access is needed to download the model. After setup, local
+  transcription works offline without an API key.
+
+In our CPU test on an Intel Core i5-13600KF, 6-7 seconds of synthetic English
+or Dutch speech decoded in less than half a second after model loading.
+Loading itself took about two seconds. These are recognition timings, not the
+full recording-to-paste delay; performance varies with your PC and recording.
+See [the measurements](ORUKEET_VALIDATION.md#v050-release-copy-measurements).
+
+For fully offline dictation, turn rewriting off or use local Ollama. Cloud
+rewriting still sends the transcript to the selected provider.
+
 ## Install the app
 
 1. Open the

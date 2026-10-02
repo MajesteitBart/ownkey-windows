@@ -282,7 +282,7 @@ Parakeet TDT 0.6B v3, detects Dutch, English, and other supported languages
 automatically. Local audio always uses mono 16 kHz. Language selection is disabled.
 
 The pinned INT8 model downloads 487 MB and takes 672 MB on disk. Allow at least
-1.2 GB free during installation. Files live under
+1.3 GB free during installation. Files live under
 `%LOCALAPPDATA%\Ownkey\models\orukeet\55a984d46f68323301837194ce647c702f55facc`.
 On Linux the models root is `${XDG_CACHE_HOME:-~/.cache}/ownkey/models`;
 local recognition has been validated on Windows only.
