@@ -60,10 +60,14 @@ rewriting still sends the transcript to the selected provider.
 9. Click **Save**. Settings and dictionary entries are only stored when you
    save.
 
-The public `v0.3.0` installer published before the signing pipeline is unsigned,
-so Windows may show an **Unknown publisher** warning. Verify that an older
+The public `v0.3.0`, `v0.5.0`, and `v0.6.0` installers are unsigned, so Windows
+may show an **Unknown publisher** warning. Before continuing, check that the
 installer came from the official `MajesteitBart/ownkey-windows` GitHub release
-before continuing.
+and that its SHA-256 hash matches the `.sha256` file attached to that release:
+
+```powershell
+Get-FileHash .\Ownkey-Setup-0.6.0.exe -Algorithm SHA256
+```
 
 Future release-qualified installers must pass the repository's Authenticode
 verification script and identify one consistent publisher for the installer and

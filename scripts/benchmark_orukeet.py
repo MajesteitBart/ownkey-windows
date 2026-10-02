@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 import wave
@@ -44,11 +45,20 @@ def main():
     parser.add_argument("model_dir", type=Path)
     parser.add_argument("clips", nargs="+", type=Path)
     parser.add_argument("--threads", type=int, nargs="+", default=[2, 4, os.cpu_count()])
+    parser.add_argument("--production-loader", action="store_true",
+                        help="load through local_transcription.load_recognizer, as the app does; "
+                             "it fixes the thread count, so --threads is ignored")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    loader, thread_counts = load_recognizer, args.threads
+    if args.production_loader:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from local_transcription import NUM_THREADS, load_recognizer as production_loader
+        loader, thread_counts = (lambda directory, threads: production_loader(directory)), [NUM_THREADS]
     process = psutil.Process()
-    results = {"machine": os.environ.get("COMPUTERNAME"), "cpu_count": os.cpu_count(), "runs": []}
-    for threads in args.threads:
+    results = {"machine": os.environ.get("COMPUTERNAME"), "cpu_count": os.cpu_count(),
+               "loader": "production" if args.production_loader else "greedy_search", "runs": []}
+    for threads in thread_counts:
         for cycle in ("cold", "warm"):
             baseline = process.memory_info().rss
             peak = [baseline]
@@ -61,7 +71,7 @@ def main():
             monitor_thread = threading.Thread(target=monitor, daemon=True)
             monitor_thread.start()
             started = time.perf_counter()
-            recognizer = load_recognizer(args.model_dir, threads)
+            recognizer = loader(args.model_dir, threads)
             load_seconds = time.perf_counter() - started
             run = {"threads": threads, "cycle": cycle, "baseline_rss": baseline,
                    "load_seconds": load_seconds, "loaded_rss": process.memory_info().rss, "clips": []}
