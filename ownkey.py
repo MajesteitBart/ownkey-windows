@@ -64,6 +64,7 @@ import brand_ui
 from meetings.server import MeetingServer
 from meetings.service import MeetingService
 from meetings.store import MeetingStore
+import windows_hotkeys
 from text_cleanup import (
     FILLER_LANGUAGES,
     clean_transcript,
@@ -2914,8 +2915,13 @@ class OwnkeyApp:
             return "rewrite"
         return None
 
+    def _windows_hotkey_keys(self) -> dict:
+        """Map each polled virtual-key code to the pynput key _hotkey_mode_for expects."""
+        return {vk: self._resolve_pynput_keys(name)[0]
+                for name, vk in windows_hotkeys.HOTKEY_VKS.items()}
+
     def _on_press(self, key) -> None:
-        """Called by pynput on any key press."""
+        """Called by the hotkey listener on any key press."""
         if self._down:
             return  # debounce repeated key-down events
         mode = self._hotkey_mode_for(key)
@@ -2927,7 +2933,7 @@ class OwnkeyApp:
         self._start_recording(mode)
 
     def _on_release(self, key) -> None:
-        """Called by pynput on any key release."""
+        """Called by the hotkey listener on any key release."""
         if not self._down:
             return
         if self._hotkey_mode_for(key) == self._record_mode:
@@ -2935,24 +2941,41 @@ class OwnkeyApp:
             self._stop_recording()
 
     def start_listener(self) -> None:
-        """Start the pynput keyboard listener in a daemon thread."""
+        """Start the hotkey listener in a daemon thread."""
         if self._listener is not None:
             try:
                 self._listener.stop()
             except Exception:
                 pass
-        listener_class = pynput_keyboard.Listener
-        if sys.platform.startswith("linux") and linux_desktop.is_wayland():
-            listener_class = linux_desktop.HotkeyListener
-        self._listener = listener_class(
-            on_press=self._on_press,
-            on_release=self._on_release,
-        )
+        if os.name == "nt":
+            # Polling key state instead of a keyboard hook: see windows_hotkeys.
+            self._listener = windows_hotkeys.HotkeyListener(
+                self._windows_hotkey_keys(),
+                on_press=self._on_press,
+                on_release=self._on_release,
+            )
+        else:
+            listener_class = pynput_keyboard.Listener
+            if sys.platform.startswith("linux") and linux_desktop.is_wayland():
+                listener_class = linux_desktop.HotkeyListener
+            self._listener = listener_class(
+                on_press=self._on_press,
+                on_release=self._on_release,
+            )
         self._listener.daemon = True
         self._listener.start()
 
     def restart_listener(self) -> None:
         """Stop and restart the listener (called after hotkey config change)."""
+        listener = getattr(self, "_listener", None)
+        if os.name == "nt" and listener is not None and listener.is_alive():
+            # It polls every offered hotkey and _hotkey_mode_for reads the new
+            # config, so keep it and the presses and releases it has queued.
+            # A hold that never started a recording may no longer match any
+            # hotkey, so do not let it keep the debounce set.
+            if not self._recording:
+                self._down = False
+            return
         self._down = False
         self.start_listener()
 
