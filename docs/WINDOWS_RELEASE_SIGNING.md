@@ -10,6 +10,12 @@ Ownkey has two Windows packaging paths:
 The public `v0.3.0` assets that predate this pipeline are unsigned. This change
 does not retroactively sign an existing GitHub release.
 
+Ownkey has no publicly trusted code-signing certificate yet. Until it does, the
+`v0.5.0` and `v0.6.0` releases publish the unsigned development installer under
+the release file name. Their release notes say the installer is unsigned and
+attach a SHA-256 file. Once a certificate is available, publish only
+`build-release.ps1` output that passes the verifier.
+
 ## Required tools
 
 Run release builds on Windows with:
@@ -181,7 +187,7 @@ checked directly:
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File .\scripts\Verify-WindowsRelease.ps1 `
   -ArtifactsDirectory .\dist-release `
-  -ExpectedVersion 0.5.0 `
+  -ExpectedVersion 0.6.0 `
   -ExpectedCertificateThumbprint $thumbprint
 
 if ($LASTEXITCODE -ne 0) {

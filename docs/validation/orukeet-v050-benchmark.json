@@ -1,0 +1,90 @@
+{
+  "machine": "DESKTOP-ZOLDER",
+  "cpu_count": 20,
+  "runs": [
+    {
+      "threads": 4,
+      "cycle": "first_process_load",
+      "baseline_rss": 50171904,
+      "load_seconds": 1.9572350999806076,
+      "loaded_rss": 777826304,
+      "clips": [
+        {
+          "name": "en-short.wav",
+          "seconds": 6.105,
+          "decode_seconds": 0.4196790999849327,
+          "text": "Today we are testing local speech recognition. The audio stays on this computer."
+        },
+        {
+          "name": "nl-short.wav",
+          "seconds": 6.77,
+          "decode_seconds": 0.45953069999814034,
+          "text": "Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer."
+        },
+        {
+          "name": "en-long.wav",
+          "seconds": 36.63,
+          "decode_seconds": 3.384504999994533,
+          "text": "Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer."
+        },
+        {
+          "name": "nl-long.wav",
+          "seconds": 40.62,
+          "decode_seconds": 3.613750799995614,
+          "text": "Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audft op deze computer."
+        }
+      ],
+      "peak_rss": 1307074560,
+      "unloaded_rss": 74416128
+    },
+    {
+      "threads": 4,
+      "cycle": "reload",
+      "baseline_rss": 74395648,
+      "load_seconds": 2.0867602999787778,
+      "loaded_rss": 780595200,
+      "clips": [
+        {
+          "name": "en-short.wav",
+          "seconds": 6.105,
+          "decode_seconds": 0.3691543999884743,
+          "text": "Today we are testing local speech recognition. The audio stays on this computer."
+        },
+        {
+          "name": "nl-short.wav",
+          "seconds": 6.77,
+          "decode_seconds": 0.4081884000042919,
+          "text": "Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer."
+        },
+        {
+          "name": "en-long.wav",
+          "seconds": 36.63,
+          "decode_seconds": 2.1953355000005104,
+          "text": "Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer. Today we are testing local speech recognition. The audio stays on this computer."
+        },
+        {
+          "name": "nl-long.wav",
+          "seconds": 40.62,
+          "decode_seconds": 2.2620476000010967,
+          "text": "Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audio blijft op deze computer. Vandaag testen we lokale spraakherkenning. De audft op deze computer."
+        }
+      ],
+      "peak_rss": 1307877376,
+      "unloaded_rss": 74895360
+    }
+  ],
+  "date": "2026-09-16",
+  "git_commit": "ba94c11bd7f31a6e053714e7c3aa39f5638b9439",
+  "cpu": "Intel Core i5-13600KF",
+  "installed_ram_gib": 64,
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "3.14.2",
+  "sherpa_onnx": "1.13.8",
+  "model_revision": "55a984d46f68323301837194ce647c702f55facc",
+  "provider": "cpu",
+  "loader": "local_transcription.load_recognizer",
+  "decoding_method": "modified_beam_search",
+  "dictionary": [],
+  "method": "Existing scripts/benchmark_orukeet.py with its loader replaced by the production local_transcription.load_recognizer; --threads 4; all four synthetic clips from scripts/New-OrukeetBenchmarkClips.ps1; one decode per clip per load cycle; process RSS sampled every 20 ms.",
+  "limitations": "Synthetic English and Dutch speech; long clips repeat a sentence six times. Decode timings exclude model loading, recording, rewriting, and text insertion. First process load may use the OS file cache. A single desktop measurement does not establish minimum hardware requirements or natural-speech accuracy."
+}
