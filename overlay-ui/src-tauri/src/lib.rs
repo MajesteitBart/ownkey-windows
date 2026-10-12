@@ -266,10 +266,16 @@ fn sync_overlay_window(app: &AppHandle, shared: &Arc<SharedOverlayState>, state:
             let Some(window) = app_handle.get_webview_window("main") else {
                 return;
             };
-            if !window.is_visible().unwrap_or(false) {
+            let hidden = !window.is_visible().unwrap_or(false);
+            if hidden {
                 log::info!("restoring overlay window");
                 let _ = restore_overlay_size(&window);
                 let _ = position_overlay_window(&window);
+            }
+            // Also when already visible, so a resync can lift a covered pill.
+            #[cfg(windows)]
+            let _ = raise_overlay_to_topmost(&window);
+            if hidden {
                 let _ = window.show();
             }
         });
@@ -429,6 +435,51 @@ fn restore_overlay_size(window: &WebviewWindow) -> tauri::Result<()> {
     window.set_size(Size::Logical(LogicalSize::new(config.width, config.height)))
 }
 
+// While the overlay is hidden, windows that come to the front can end up stacked
+// above it even though it keeps WS_EX_TOPMOST. Showing without activation keeps
+// that position, so the pill opened underneath ordinary windows and was only
+// visible over the desktop. set_always_on_top(true) does nothing here, because
+// tao only calls SetWindowPos when its own always-on-top flag changes.
+#[cfg(windows)]
+fn raise_overlay_to_topmost(window: &WebviewWindow) -> tauri::Result<()> {
+    if !raise_to_topmost(window.hwnd()?.0) {
+        log::warn!("could not raise overlay: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn raise_to_topmost(hwnd: *mut std::ffi::c_void) -> bool {
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(
+            window: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    const HWND_TOPMOST: isize = -1;
+    const SWP_NOSIZE_NOMOVE_NOACTIVATE: u32 = 0x0001 | 0x0002 | 0x0010;
+
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST as *mut c_void,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOSIZE_NOMOVE_NOACTIVATE,
+        ) != 0
+    }
+}
+
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
     let monitor = match window.current_monitor()? {
         Some(current) => Some(current),
@@ -553,5 +604,121 @@ mod tests {
         let mut buffer = [0_u8; 64];
         let (count, _) = bridge.recv_from(&mut buffer).expect("socket receives");
         assert_eq!(&buffer[..count], patch);
+    }
+
+    // The pill once opened underneath ordinary windows: while hidden it had
+    // dropped below them, and showing without activation kept that position.
+    #[cfg(windows)]
+    #[test]
+    fn raise_lifts_a_covered_overlay_without_activating_it() {
+        use std::ffi::c_void;
+        use std::ptr::null_mut;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn CreateWindowExW(
+                ex_style: u32,
+                class: *const u16,
+                title: *const u16,
+                style: u32,
+                x: i32,
+                y: i32,
+                width: i32,
+                height: i32,
+                parent: *mut c_void,
+                menu: *mut c_void,
+                instance: *mut c_void,
+                param: *mut c_void,
+            ) -> *mut c_void;
+            fn DestroyWindow(window: *mut c_void) -> i32;
+            fn ShowWindow(window: *mut c_void, command: i32) -> i32;
+            fn SetWindowPos(
+                window: *mut c_void,
+                insert_after: *mut c_void,
+                x: i32,
+                y: i32,
+                width: i32,
+                height: i32,
+                flags: u32,
+            ) -> i32;
+            fn GetWindow(window: *mut c_void, command: u32) -> *mut c_void;
+            fn GetWindowLongW(window: *mut c_void, index: i32) -> i32;
+            fn GetForegroundWindow() -> *mut c_void;
+        }
+        const WS_POPUP: u32 = 0x8000_0000;
+        const WS_VISIBLE: u32 = 0x1000_0000;
+        const WS_EX_TOPMOST: u32 = 0x0000_0008;
+        const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+        const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+        const GWL_EXSTYLE: i32 = -20;
+        const GW_HWNDNEXT: u32 = 2;
+        const SW_SHOWNOACTIVATE: i32 = 4;
+        const HWND_BOTTOM: isize = 1;
+        const SWP_NOSIZE_NOMOVE_NOACTIVATE: u32 = 0x0001 | 0x0002 | 0x0010;
+
+        // Off-screen and never activated, so the test leaves the desktop alone.
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let create = |ex_style: u32, style: u32, x: i32| unsafe {
+            let window = CreateWindowExW(
+                ex_style,
+                class.as_ptr(),
+                class.as_ptr(),
+                style,
+                x,
+                -20_000,
+                64,
+                64,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            );
+            assert!(!window.is_null(), "{}", std::io::Error::last_os_error());
+            window
+        };
+        let is_above = |upper: *mut c_void, lower: *mut c_void| unsafe {
+            let mut next = GetWindow(upper, GW_HWNDNEXT);
+            while !next.is_null() {
+                if next == lower {
+                    return true;
+                }
+                next = GetWindow(next, GW_HWNDNEXT);
+            }
+            false
+        };
+        let ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        let overlay = create(ex_style | WS_EX_TOPMOST, WS_POPUP, -20_000);
+        let covering = create(ex_style, WS_POPUP | WS_VISIBLE, -19_900);
+
+        for shown in [false, true] {
+            unsafe {
+                if shown {
+                    ShowWindow(overlay, SW_SHOWNOACTIVATE);
+                }
+                // HWND_BOTTOM puts the overlay under every ordinary window.
+                SetWindowPos(
+                    overlay,
+                    HWND_BOTTOM as *mut c_void,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOSIZE_NOMOVE_NOACTIVATE,
+                );
+            }
+            assert!(is_above(covering, overlay), "shown={shown}: not covered");
+            let foreground = unsafe { GetForegroundWindow() };
+
+            assert!(raise_to_topmost(overlay), "{}", std::io::Error::last_os_error());
+
+            assert!(is_above(overlay, covering), "shown={shown}: still covered");
+            let topmost = unsafe { GetWindowLongW(overlay, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST;
+            assert_ne!(topmost, 0, "shown={shown}: not topmost");
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground, "shown={shown}: focus moved");
+        }
+        unsafe {
+            DestroyWindow(covering);
+            DestroyWindow(overlay);
+        }
     }
 }
