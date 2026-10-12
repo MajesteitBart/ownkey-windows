@@ -7,8 +7,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Position, State, Url, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, State, Url,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const DEFAULT_UDP_ADDR: &str = "127.0.0.1:38485";
@@ -268,6 +268,7 @@ fn sync_overlay_window(app: &AppHandle, shared: &Arc<SharedOverlayState>, state:
             };
             if !window.is_visible().unwrap_or(false) {
                 log::info!("restoring overlay window");
+                let _ = restore_overlay_size(&window);
                 let _ = position_overlay_window(&window);
                 let _ = window.show();
             }
@@ -332,6 +333,19 @@ fn set_overlay_state(
     Ok(())
 }
 
+// Windows reports a reply that reached a closed port as ConnectionReset on the
+// next receive. That happens when the backend stops waiting for a meetings
+// answer before the window opens. The socket keeps working, so only a real
+// failure may stop the bridge.
+fn is_recoverable_receive_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+    )
+}
+
 fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
     thread::spawn(move || {
         let address = udp_addr();
@@ -391,10 +405,7 @@ fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
                     }
                     log::warn!("ignored UDP payload (invalid JSON shape): {}", payload);
                 }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        || error.kind() == std::io::ErrorKind::TimedOut =>
-                {
+                Err(error) if is_recoverable_receive_error(error.kind()) => {
                     continue;
                 }
                 Err(error) => {
@@ -404,6 +415,18 @@ fn start_udp_bridge(app: AppHandle, shared: Arc<SharedOverlayState>) {
             }
         }
     });
+}
+
+// A display change while the overlay is hidden, such as connecting over Remote
+// Desktop or returning to the console, can rescale the window and leave WebView2
+// presenting nothing. Resizing back to the configured size makes it paint again.
+fn restore_overlay_size(window: &WebviewWindow) -> tauri::Result<()> {
+    let label = window.label();
+    let windows = &window.config().app.windows;
+    let Some(config) = windows.iter().find(|config| config.label == label) else {
+        return Ok(());
+    };
+    window.set_size(Size::Logical(LogicalSize::new(config.width, config.height)))
 }
 
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
@@ -502,5 +525,33 @@ mod tests {
         assert!(!parsed.meetings.navigate);
         assert!(serde_json::from_str::<MeetingsRequest>(r#"{"visible":true}"#).is_err());
         assert!(serde_json::from_str::<OverlayState>(request).is_err());
+    }
+
+    // The bridge once stopped for good after replying to a backend that had
+    // already given up on a meetings request, so the overlay never showed again.
+    #[cfg(windows)]
+    #[test]
+    fn bridge_keeps_receiving_after_replying_to_a_closed_port() {
+        let bridge = UdpSocket::bind("127.0.0.1:0").expect("bind bridge");
+        let timeout = Some(Duration::from_secs(2));
+        bridge.set_read_timeout(timeout).unwrap();
+        let gone = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let gone_addr = gone.local_addr().unwrap();
+        drop(gone);
+
+        let reply = br#"{"meetings":"opened"}"#;
+        bridge.send_to(reply, gone_addr).unwrap();
+        let error = bridge
+            .recv_from(&mut [0_u8; 64])
+            .expect_err("Windows reports the unreachable reply");
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        assert!(is_recoverable_receive_error(error.kind()));
+
+        let backend = UdpSocket::bind("127.0.0.1:0").expect("bind backend");
+        let patch = br#"{"visible":true}"#;
+        backend.send_to(patch, bridge.local_addr().unwrap()).unwrap();
+        let mut buffer = [0_u8; 64];
+        let (count, _) = bridge.recv_from(&mut buffer).expect("socket receives");
+        assert_eq!(&buffer[..count], patch);
     }
 }
