@@ -266,10 +266,16 @@ fn sync_overlay_window(app: &AppHandle, shared: &Arc<SharedOverlayState>, state:
             let Some(window) = app_handle.get_webview_window("main") else {
                 return;
             };
-            if !window.is_visible().unwrap_or(false) {
+            let hidden = !window.is_visible().unwrap_or(false);
+            if hidden {
                 log::info!("restoring overlay window");
                 let _ = restore_overlay_size(&window);
                 let _ = position_overlay_window(&window);
+            }
+            // Also when already visible, so a resync can lift a covered pill.
+            #[cfg(windows)]
+            let _ = raise_overlay_to_topmost(&window);
+            if hidden {
                 let _ = window.show();
             }
         });
@@ -427,6 +433,48 @@ fn restore_overlay_size(window: &WebviewWindow) -> tauri::Result<()> {
         return Ok(());
     };
     window.set_size(Size::Logical(LogicalSize::new(config.width, config.height)))
+}
+
+// While the overlay is hidden, windows that come to the front can end up stacked
+// above it even though it keeps WS_EX_TOPMOST. Showing without activation keeps
+// that position, so the pill opened underneath ordinary windows and was only
+// visible over the desktop. set_always_on_top(true) does nothing here, because
+// tao only calls SetWindowPos when its own always-on-top flag changes.
+#[cfg(windows)]
+fn raise_overlay_to_topmost(window: &WebviewWindow) -> tauri::Result<()> {
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(
+            window: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    const HWND_TOPMOST: isize = -1;
+    const SWP_NOSIZE_NOMOVE_NOACTIVATE: u32 = 0x0001 | 0x0002 | 0x0010;
+
+    let hwnd = window.hwnd()?;
+    let raised = unsafe {
+        SetWindowPos(
+            hwnd.0,
+            HWND_TOPMOST as *mut c_void,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOSIZE_NOMOVE_NOACTIVATE,
+        )
+    };
+    if raised == 0 {
+        log::warn!("could not raise overlay: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn position_overlay_window(window: &WebviewWindow) -> tauri::Result<()> {
